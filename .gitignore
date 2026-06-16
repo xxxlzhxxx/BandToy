@@ -5,4 +5,5 @@ firmware/sdkconfig.old
 firmware/main/bandtoy_config.h
 logs/
 memory/
+__pycache__/
 .DS_Store

@@ -79,14 +79,14 @@ uint32_t now_ms() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 }
 
-uint32_t latency_compensated_join_delay(uint32_t matched_position_ms,
-                                        uint32_t elapsed_since_record_start_ms,
+uint32_t latency_compensated_join_delay(uint32_t record_end_position_ms,
+                                        uint32_t elapsed_since_record_end_ms,
                                         uint16_t bpm) {
     const uint32_t bar_ms = bar_duration_ms(bpm);
     if (bar_ms == 0) {
         return 0;
     }
-    const uint32_t estimated_now_ms = matched_position_ms + elapsed_since_record_start_ms + kPlaybackStartupCompensationMs;
+    const uint32_t estimated_now_ms = record_end_position_ms + elapsed_since_record_end_ms + kPlaybackStartupCompensationMs;
     uint32_t delay_ms = bar_ms - (estimated_now_ms % bar_ms);
     if (delay_ms < kMinimumJoinDelayMs) {
         delay_ms += bar_ms;
@@ -149,18 +149,22 @@ void leader_task(void*) {
         }
 
         g_display.success();
-        const uint32_t elapsed_ms = recognition_done_ms - record_start_ms;
-        const uint32_t compensated_join_ms = latency_compensated_join_delay(result.position_ms, elapsed_ms, song.bpm);
+        const uint32_t recognition_roundtrip_ms = recognition_done_ms - record_end_ms;
+        const uint32_t record_end_position_ms = result.position_at_record_end_ms != 0
+            ? result.position_at_record_end_ms
+            : result.position_ms + (record_end_ms - record_start_ms);
+        const uint32_t compensated_join_ms = latency_compensated_join_delay(record_end_position_ms, recognition_roundtrip_ms, song.bpm);
         ESP_LOGI(TAG,
-                 "recognized Twinkle confidence=%.2f position_ms=%lu server_join_ms=%lu elapsed_ms=%lu compensated_join_ms=%lu",
+                 "recognized Twinkle confidence=%.2f position_ms=%lu record_end_position_ms=%lu server_join_ms=%lu recognition_roundtrip_ms=%lu compensated_join_ms=%lu",
                  result.confidence,
                  static_cast<unsigned long>(result.position_ms),
+                 static_cast<unsigned long>(record_end_position_ms),
                  static_cast<unsigned long>(result.join_after_ms),
-                 static_cast<unsigned long>(elapsed_ms),
+                 static_cast<unsigned long>(recognition_roundtrip_ms),
                  static_cast<unsigned long>(compensated_join_ms));
         ESP_LOGI(TAG, "recording_ms=%lu recognition_roundtrip_ms=%lu",
                  static_cast<unsigned long>(record_end_ms - record_start_ms),
-                 static_cast<unsigned long>(recognition_done_ms - record_end_ms));
+                 static_cast<unsigned long>(recognition_roundtrip_ms));
         if (compensated_join_ms > 0) {
             g_life.joining(compensated_join_ms);
         }

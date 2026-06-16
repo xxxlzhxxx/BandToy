@@ -139,27 +139,40 @@ def build_reference() -> list[int]:
 REFERENCE = build_reference()
 
 
-def match_position(observed: list[int | None]) -> dict:
-    observed = [note for note in observed if note is not None]
-    if len(observed) < 4:
+def next_bar_delay(position_ms: int) -> int:
+    if position_ms <= 0:
+        return int(BAR_MS)
+    delay = int(BAR_MS - (position_ms % int(BAR_MS)))
+    if delay < 250:
+        delay += int(BAR_MS)
+    return delay
+
+
+def match_position(observed: list[int | None], audio_duration_ms: int) -> dict:
+    pitched = [(index, note) for index, note in enumerate(observed) if note is not None]
+    if len(pitched) < 4:
         return {
             "song_id": 1,
             "title": "Twinkle Twinkle Little Star",
             "confidence": 0.0,
             "position_ms": 0,
+            "position_at_record_end_ms": 0,
             "bar_index": 0,
             "beat_in_bar": 0.0,
             "join_after_ms": int(BAR_MS),
             "recognized": False,
         }
+    first_pitch_frame = pitched[0][0]
+    first_pitch_ms = first_pitch_frame * 125
+    observed_notes = [note for _, note in pitched]
 
     best_score = -1.0
     best_offset = 0
-    max_offset = max(1, len(REFERENCE) - len(observed))
+    max_offset = max(1, len(REFERENCE) - len(observed_notes))
     for offset in range(max_offset):
         total = 0.0
         count = 0
-        for i, note in enumerate(observed):
+        for i, note in enumerate(observed_notes):
             diff = abs(note - REFERENCE[offset + i])
             total += max(0.0, 1.0 - diff / 5.0)
             count += 1
@@ -170,20 +183,20 @@ def match_position(observed: list[int | None]) -> dict:
 
     frame_ms = 125
     position_ms = int(best_offset * frame_ms)
-    beat_position = position_ms / BEAT_MS
+    position_at_record_end_ms = position_ms + max(0, audio_duration_ms - first_pitch_ms)
+    beat_position = position_at_record_end_ms / BEAT_MS
     bar_index = int(beat_position // 4)
     beat_in_bar = beat_position % 4
-    next_bar_ms = int((bar_index + 1) * BAR_MS)
-    join_after_ms = max(250, next_bar_ms - position_ms)
 
     return {
         "song_id": 1,
         "title": "Twinkle Twinkle Little Star",
         "confidence": round(float(best_score), 3),
         "position_ms": position_ms,
+        "position_at_record_end_ms": int(position_at_record_end_ms),
         "bar_index": bar_index,
         "beat_in_bar": round(float(beat_in_bar), 2),
-        "join_after_ms": join_after_ms,
+        "join_after_ms": next_bar_delay(position_at_record_end_ms),
         "recognized": best_score >= 0.55,
     }
 
@@ -206,12 +219,16 @@ class Handler(BaseHTTPRequestHandler):
             samples, rate = parse_audio(body, content_type)
             samples = resample_linear(samples, rate)
             melody = extract_melody(samples)
-            result = match_position(melody)
+            audio_duration_ms = int(len(samples) * 1000 / SAMPLE_RATE)
+            result = match_position(melody, audio_duration_ms)
+            pitched_indices = [index for index, note in enumerate(melody) if note is not None]
             result["debug"] = {
                 "bytes": len(body),
                 "samples": len(samples),
+                "duration_ms": audio_duration_ms,
                 "rms": round(rms(samples), 5),
                 "pitched_frames": sum(1 for note in melody if note is not None),
+                "first_pitch_ms": (pitched_indices[0] * 125) if pitched_indices else None,
             }
             self.send_json(result)
             print(json.dumps(result), flush=True)

@@ -24,9 +24,8 @@ Last updated: 2026-06-16
 - Audio statistics logging after recording.
 - HTTP recognition client that uploads raw 16-bit PCM.
 - Latency-compensated harmony joining when recognition succeeds. The firmware
-  combines the server's matched song position with local elapsed time from
-  recording start to recognition response, then schedules playback at the next
-  bar boundary.
+  combines the server's estimated song position at recording end with local
+  recognition round-trip time, then schedules playback at the next bar boundary.
 - Simple state signals:
   - idle
   - listening
@@ -86,19 +85,28 @@ Example successful recognition:
 {
   "song_id": 1,
   "title": "Twinkle Twinkle Little Star",
-  "confidence": 0.719,
-  "position_ms": 625,
-  "bar_index": 0,
-  "beat_in_bar": 1.0,
-  "join_after_ms": 1875,
+  "confidence": 0.906,
+  "position_ms": 1500,
+  "position_at_record_end_ms": 5500,
+  "bar_index": 2,
+  "beat_in_bar": 0.8,
+  "join_after_ms": 2000,
   "recognized": true,
   "debug": {
     "bytes": 192000,
     "samples": 64000,
-    "rms": 0.05109,
-    "pitched_frames": 32
+    "duration_ms": 4000,
+    "rms": 0.0148,
+    "pitched_frames": 32,
+    "first_pitch_ms": 0
   }
 }
+```
+
+Example device-side join calculation:
+
+```text
+recognized Twinkle confidence=0.91 position_ms=1500 record_end_position_ms=5500 server_join_ms=2000 recognition_roundtrip_ms=1110 compensated_join_ms=810
 ```
 
 ## Known Limitations
@@ -106,8 +114,9 @@ Example successful recognition:
 - Only Twinkle Twinkle Little Star is recognized.
 - The recognition algorithm is a PoC contour matcher, not a full audio
   fingerprinting system.
-- Join timing has basic local latency compensation, but it still assumes stable
-  source tempo and does not continuously follow drift after playback starts.
+- Join timing has basic local latency compensation, but it still assumes the
+  external source keeps playing at the reference tempo and does not continuously
+  follow drift after playback starts.
 - The firmware still uses the default 1 MB factory app partition. The actual
   ESP32-S3-BOX-3 flash is larger, but the partition table should be updated
   before adding larger assets or more features.
