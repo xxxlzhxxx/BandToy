@@ -1,0 +1,120 @@
+# Current Status
+
+Last updated: 2026-06-16
+
+## Implemented
+
+### Hardware Target
+
+- ESP32-S3-BOX-3 support.
+- Built-in BOOT button on GPIO0 as the listening trigger.
+- Built-in ES8311 speaker output.
+- Built-in ES7210 microphone input.
+- Built-in ILI9341 display output.
+
+### Firmware
+
+- Character profile for the current "Panda" prototype.
+- Song runtime with BPM-based note scheduling.
+- Twinkle Twinkle Little Star song model.
+- Melody and harmony tracks.
+- BOOT-triggered 4-second microphone recording.
+- Audio statistics logging after recording.
+- HTTP recognition client that uploads raw 16-bit PCM.
+- Harmony playback when recognition succeeds.
+- Simple state signals:
+  - idle
+  - listening
+  - recognizing
+  - success
+  - failure
+  - joining
+  - playing
+
+### Display
+
+- Idle screen.
+- Listening screen shown immediately after BOOT is pressed.
+- Recognizing screen while the recording is being uploaded.
+- Success screen when the server recognizes Twinkle.
+- Failure screen when the server response is below threshold.
+- Playing screen while the harmony track is sounding.
+
+### Recognition Server
+
+- Local Python HTTP server.
+- `/health` endpoint.
+- `/recognize` endpoint.
+- 16-bit PCM and WAV parsing.
+- Linear resampling to 16 kHz.
+- Lightweight frame-level pitch estimation.
+- Pitch contour matching against a built-in Twinkle reference.
+- Response fields:
+  - `song_id`
+  - `title`
+  - `confidence`
+  - `position_ms`
+  - `bar_index`
+  - `beat_in_bar`
+  - `join_after_ms`
+  - `recognized`
+  - `debug`
+
+### Test Assets
+
+- `assets/reference_twinkle_96bpm.wav`: generated C-major, 96 BPM reference
+  melody for repeatable recognition tests.
+
+## Verified Locally
+
+- Firmware builds with ESP-IDF 5.5.4.
+- Firmware flashes to ESP32-S3-BOX-3 over `/dev/cu.usbmodem3101`.
+- Display initializes successfully.
+- WiFi connects to the local network when configured.
+- ESP32 posts microphone audio to the server.
+- Server returns `recognized: true` for the generated Twinkle reference audio.
+- Device waits for `join_after_ms` and plays the harmony track.
+
+Example successful recognition:
+
+```json
+{
+  "song_id": 1,
+  "title": "Twinkle Twinkle Little Star",
+  "confidence": 0.719,
+  "position_ms": 625,
+  "bar_index": 0,
+  "beat_in_bar": 1.0,
+  "join_after_ms": 1875,
+  "recognized": true,
+  "debug": {
+    "bytes": 192000,
+    "samples": 64000,
+    "rms": 0.05109,
+    "pitched_frames": 32
+  }
+}
+```
+
+## Known Limitations
+
+- Only Twinkle Twinkle Little Star is recognized.
+- The recognition algorithm is a PoC contour matcher, not a full audio
+  fingerprinting system.
+- Join timing does not yet compensate for recording duration, HTTP latency,
+  server processing time, or playback startup latency.
+- The firmware still uses the default 1 MB factory app partition. The actual
+  ESP32-S3-BOX-3 flash is larger, but the partition table should be updated
+  before adding larger assets or more features.
+- WiFi credentials and server URLs are local-only and should stay in
+  `firmware/main/bandtoy_config.h`, which is ignored by Git.
+
+## Next Candidates
+
+- Add a custom 16 MB flash partition table.
+- Add latency-compensated join timing.
+- Improve recognition robustness for real external instruments.
+- Move from Twinkle-only matching to a small multi-song library.
+- Add MIDI import for song/track authoring.
+- Restore or replace ESP-NOW multi-device joining once the microphone path feels
+  good enough.

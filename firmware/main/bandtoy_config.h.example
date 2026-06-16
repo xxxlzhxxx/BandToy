@@ -1,0 +1,10 @@
+#pragma once
+
+namespace bandtoy {
+
+// Copy this file to bandtoy_config.h and fill in your local network settings.
+constexpr const char* kWifiSsid = "YOUR_WIFI_SSID";
+constexpr const char* kWifiPassword = "YOUR_WIFI_PASSWORD";
+constexpr const char* kRecognitionServerUrl = "http://YOUR_COMPUTER_IP:8765/recognize";
+
+}  // namespace bandtoy

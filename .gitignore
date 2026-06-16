@@ -1,0 +1,8 @@
+firmware/build*/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/main/bandtoy_config.h
+logs/
+memory/
+.DS_Store
