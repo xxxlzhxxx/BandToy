@@ -15,8 +15,10 @@ namespace {
 constexpr const char* TAG = "box3_audio_output";
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr int kChunkSamples = 256;
-constexpr int16_t kAmplitude = 11500;
-constexpr int kEnvelopeSamples = kBox3AudioSampleRate * 8 / 1000;
+constexpr int16_t kAmplitude = 10500;
+constexpr int kAttackSamples = kBox3AudioSampleRate * 4 / 1000;
+constexpr int kReleaseSamples = kBox3AudioSampleRate * 18 / 1000;
+constexpr float kMusicBoxDecayMs = 760.0f;
 constexpr uint8_t kEs8311Address = ES8311_CODEC_DEFAULT_ADDR;
 constexpr uint8_t kEs7210Address = ES7210_CODEC_DEFAULT_ADDR;
 constexpr int kOutputVolume = 88;
@@ -194,22 +196,29 @@ void Box3AudioOutput::play_tone(uint16_t frequency_hz, uint32_t duration_ms) {
     int32_t written = 0;
     int16_t samples[kChunkSamples];
     const float phase_step = kTwoPi * static_cast<float>(frequency_hz) / static_cast<float>(kBox3AudioSampleRate);
+    phase_ = 0.0f;
 
     while (remaining > 0) {
         const int count = remaining > kChunkSamples ? kChunkSamples : remaining;
         for (int i = 0; i < count; ++i) {
             const int32_t sample_index = written + i;
-            float envelope = 1.0f;
-            if (sample_index < kEnvelopeSamples) {
-                envelope = static_cast<float>(sample_index) / static_cast<float>(kEnvelopeSamples);
+            float attack = 1.0f;
+            if (sample_index < kAttackSamples) {
+                attack = static_cast<float>(sample_index) / static_cast<float>(kAttackSamples);
             }
+            const float t_ms = static_cast<float>(sample_index) * 1000.0f / static_cast<float>(kBox3AudioSampleRate);
+            float envelope = attack * expf(-t_ms / kMusicBoxDecayMs);
             const int32_t samples_to_end = total_samples - sample_index;
-            if (samples_to_end < kEnvelopeSamples) {
-                const float release = static_cast<float>(samples_to_end) / static_cast<float>(kEnvelopeSamples);
+            if (samples_to_end < kReleaseSamples) {
+                const float release = static_cast<float>(samples_to_end) / static_cast<float>(kReleaseSamples);
                 envelope = envelope < release ? envelope : release;
             }
 
-            samples[i] = static_cast<int16_t>(sinf(phase_) * static_cast<float>(kAmplitude) * envelope);
+            const float tone = sinf(phase_) +
+                               0.50f * sinf(phase_ * 2.0f) +
+                               0.26f * sinf(phase_ * 3.0f) +
+                               0.12f * sinf(phase_ * 5.0f);
+            samples[i] = static_cast<int16_t>(tone * static_cast<float>(kAmplitude) * envelope * 0.58f);
             phase_ += phase_step;
             if (phase_ >= kTwoPi) {
                 phase_ -= kTwoPi;

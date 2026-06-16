@@ -8,6 +8,7 @@ struct RecognitionResult {
     bool recognized;
     uint16_t song_id;
     float confidence;
+    uint32_t position_ms;
     uint32_t join_after_ms;
 };
 

@@ -131,6 +131,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         .recognized = false,
         .song_id = 0,
         .confidence = 0.0f,
+        .position_ms = 0,
         .join_after_ms = 0,
     };
     if (!wifi_ready_) {
@@ -169,6 +170,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
             result.recognized = parse_bool(response, "\"recognized\"");
             result.song_id = static_cast<uint16_t>(parse_u32(response, "\"song_id\"", 0));
             result.confidence = parse_float(response, "\"confidence\"", 0.0f);
+            result.position_ms = parse_u32(response, "\"position_ms\"", 0);
             result.join_after_ms = parse_u32(response, "\"join_after_ms\"", 0);
         }
     } else {

@@ -3,6 +3,7 @@
 #include "display_signals.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -22,6 +23,8 @@ constexpr uint8_t kJoinAfterBars = 1;
 constexpr uint32_t kListenDurationMs = 4000;
 constexpr int kListenSamples = static_cast<int>((static_cast<uint64_t>(kListenDurationMs) * kBox3AudioSampleRate) / 1000);
 constexpr float kMinimumConfidence = 0.45f;
+constexpr uint32_t kMinimumJoinDelayMs = 250;
+constexpr uint32_t kPlaybackStartupCompensationMs = 80;
 
 SongRuntime g_runtime;
 DeviceSync g_sync;
@@ -72,6 +75,25 @@ void log_audio_stats(const int16_t* samples, int sample_count) {
     ESP_LOGI(TAG, "recorded audio stats: samples=%d peak=%d rms=%.1f", sample_count, peak, value);
 }
 
+uint32_t now_ms() {
+    return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+uint32_t latency_compensated_join_delay(uint32_t matched_position_ms,
+                                        uint32_t elapsed_since_record_start_ms,
+                                        uint16_t bpm) {
+    const uint32_t bar_ms = bar_duration_ms(bpm);
+    if (bar_ms == 0) {
+        return 0;
+    }
+    const uint32_t estimated_now_ms = matched_position_ms + elapsed_since_record_start_ms + kPlaybackStartupCompensationMs;
+    uint32_t delay_ms = bar_ms - (estimated_now_ms % bar_ms);
+    if (delay_ms < kMinimumJoinDelayMs) {
+        delay_ms += bar_ms;
+    }
+    return delay_ms;
+}
+
 #if !BANDTOY_ROLE_LEADER
 void on_start_message(const SyncStartMessage& message) {
     if (g_start_queue == nullptr) {
@@ -107,12 +129,15 @@ void leader_task(void*) {
 
         g_display.listening();
         ESP_LOGI(TAG, "listening...");
+        const uint32_t record_start_ms = now_ms();
         g_runtime.record(listen_buffer, kListenSamples);
+        const uint32_t record_end_ms = now_ms();
         log_audio_stats(listen_buffer, kListenSamples);
         g_display.recognizing();
         ESP_LOGI(TAG, "uploading recognition audio");
 
         RecognitionResult result = g_recognition.recognize(listen_buffer, kListenSamples, kBox3AudioSampleRate);
+        const uint32_t recognition_done_ms = now_ms();
         if (!result.recognized || result.song_id != song.song_id || result.confidence < kMinimumConfidence) {
             g_display.failure();
             ESP_LOGW(TAG, "not joining: recognized=%d song_id=%u confidence=%.2f",
@@ -124,10 +149,20 @@ void leader_task(void*) {
         }
 
         g_display.success();
-        ESP_LOGI(TAG, "recognized Twinkle confidence=%.2f join_after_ms=%lu",
-                 result.confidence, static_cast<unsigned long>(result.join_after_ms));
-        if (result.join_after_ms > 0) {
-            g_life.joining(result.join_after_ms);
+        const uint32_t elapsed_ms = recognition_done_ms - record_start_ms;
+        const uint32_t compensated_join_ms = latency_compensated_join_delay(result.position_ms, elapsed_ms, song.bpm);
+        ESP_LOGI(TAG,
+                 "recognized Twinkle confidence=%.2f position_ms=%lu server_join_ms=%lu elapsed_ms=%lu compensated_join_ms=%lu",
+                 result.confidence,
+                 static_cast<unsigned long>(result.position_ms),
+                 static_cast<unsigned long>(result.join_after_ms),
+                 static_cast<unsigned long>(elapsed_ms),
+                 static_cast<unsigned long>(compensated_join_ms));
+        ESP_LOGI(TAG, "recording_ms=%lu recognition_roundtrip_ms=%lu",
+                 static_cast<unsigned long>(record_end_ms - record_start_ms),
+                 static_cast<unsigned long>(recognition_done_ms - record_end_ms));
+        if (compensated_join_ms > 0) {
+            g_life.joining(compensated_join_ms);
         }
 
         g_life.playing();

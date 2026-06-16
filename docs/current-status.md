@@ -18,10 +18,15 @@ Last updated: 2026-06-16
 - Song runtime with BPM-based note scheduling.
 - Twinkle Twinkle Little Star song model.
 - Melody and harmony tracks.
+- Music-box style synthesized tone with fast attack, harmonic overtones, and
+  exponential decay.
 - BOOT-triggered 4-second microphone recording.
 - Audio statistics logging after recording.
 - HTTP recognition client that uploads raw 16-bit PCM.
-- Harmony playback when recognition succeeds.
+- Latency-compensated harmony joining when recognition succeeds. The firmware
+  combines the server's matched song position with local elapsed time from
+  recording start to recognition response, then schedules playback at the next
+  bar boundary.
 - Simple state signals:
   - idle
   - listening
@@ -101,8 +106,8 @@ Example successful recognition:
 - Only Twinkle Twinkle Little Star is recognized.
 - The recognition algorithm is a PoC contour matcher, not a full audio
   fingerprinting system.
-- Join timing does not yet compensate for recording duration, HTTP latency,
-  server processing time, or playback startup latency.
+- Join timing has basic local latency compensation, but it still assumes stable
+  source tempo and does not continuously follow drift after playback starts.
 - The firmware still uses the default 1 MB factory app partition. The actual
   ESP32-S3-BOX-3 flash is larger, but the partition table should be updated
   before adding larger assets or more features.
