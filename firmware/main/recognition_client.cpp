@@ -230,10 +230,15 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         return result;
     }
 
-    char response[1536] = {};
+    constexpr int kResponseCapacity = 1536;
+    char* response = static_cast<char*>(calloc(kResponseCapacity, sizeof(char)));
+    if (response == nullptr) {
+        ESP_LOGE(TAG, "failed to allocate recognition response buffer");
+        return result;
+    }
     HttpResponseBuffer response_buffer = {
         .data = response,
-        .capacity = sizeof(response),
+        .capacity = kResponseCapacity,
         .length = 0,
     };
     esp_http_client_config_t config = {};
@@ -244,6 +249,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
     config.user_data = &response_buffer;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
+        free(response);
         return result;
     }
 
@@ -275,6 +281,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         ESP_LOGE(TAG, "recognition request failed: %s", esp_err_to_name(err));
     }
     esp_http_client_cleanup(client);
+    free(response);
     return result;
 }
 
