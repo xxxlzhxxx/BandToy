@@ -108,6 +108,69 @@ bool parse_string(const char* text, const char* key, char* out, size_t out_size)
     out[len] = '\0';
     return true;
 }
+
+const char* parse_string_after(const char* text, const char* key, char* out, size_t out_size) {
+    if (!parse_string(text, key, out, out_size)) {
+        return nullptr;
+    }
+    const char* found = strstr(text, key);
+    const char* colon = found != nullptr ? strchr(found, ':') : nullptr;
+    const char* first_quote = colon != nullptr ? strchr(colon, '"') : nullptr;
+    return first_quote != nullptr ? strchr(first_quote + 1, '"') : nullptr;
+}
+
+const char* parse_u32_after(const char* text, const char* key, uint32_t* out) {
+    const char* found = strstr(text, key);
+    if (found == nullptr || out == nullptr) {
+        return nullptr;
+    }
+    const char* colon = strchr(found, ':');
+    if (colon == nullptr) {
+        return nullptr;
+    }
+    *out = static_cast<uint32_t>(strtoul(colon + 1, nullptr, 10));
+    return colon + 1;
+}
+
+bool parse_response_phrase(const char* response, RuntimePhrase* phrase) {
+    const char* root = strstr(response, "\"response_phrase\"");
+    if (root == nullptr || phrase == nullptr) {
+        return false;
+    }
+    memset(phrase, 0, sizeof(*phrase));
+    parse_string(root, "\"phrase_id\"", phrase->phrase_id, sizeof(phrase->phrase_id));
+    parse_string(root, "\"instrument\"", phrase->instrument, sizeof(phrase->instrument));
+    parse_u32_after(root, "\"duration_ms\"", &phrase->duration_ms);
+
+    const char* notes = strstr(root, "\"notes\"");
+    if (notes == nullptr) {
+        return phrase->phrase_id[0] != '\0';
+    }
+
+    const char* cursor = notes;
+    while (phrase->note_count < sizeof(phrase->notes) / sizeof(phrase->notes[0])) {
+        const char* note_key = strstr(cursor, "\"note\"");
+        if (note_key == nullptr) {
+            break;
+        }
+        PhraseNoteEvent& note = phrase->notes[phrase->note_count];
+        const char* after_note = parse_string_after(note_key, "\"note\"", note.note, sizeof(note.note));
+        if (after_note == nullptr) {
+            break;
+        }
+        const char* after_start = parse_u32_after(after_note, "\"start_ms\"", &note.start_ms);
+        const char* after_duration = parse_u32_after(after_start != nullptr ? after_start : after_note,
+                                                     "\"duration_ms\"", &note.duration_ms);
+        uint32_t velocity = 0;
+        const char* after_velocity = parse_u32_after(after_duration != nullptr ? after_duration : after_note,
+                                                     "\"velocity\"", &velocity);
+        note.velocity = static_cast<uint8_t>(std::min<uint32_t>(velocity, 255));
+        phrase->note_count += 1;
+        cursor = after_velocity != nullptr ? after_velocity : after_note + 1;
+    }
+
+    return phrase->phrase_id[0] != '\0' && phrase->note_count > 0;
+}
 }  // namespace
 
 void RecognitionClient::begin() {
@@ -160,6 +223,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         .has_response = false,
         .response_phrase_id = {},
         .response_delay_ms = 0,
+        .response_phrase = {},
     };
     if (!wifi_ready_) {
         ESP_LOGW(TAG, "recognition skipped: wifi not ready");
@@ -203,6 +267,9 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
             result.response_delay_ms = parse_u32(response, "\"response_delay_ms\"", 0);
             result.has_response = parse_string(response, "\"response_phrase_id\"", result.response_phrase_id,
                                                sizeof(result.response_phrase_id));
+            if (result.has_response) {
+                result.has_response = parse_response_phrase(response, &result.response_phrase);
+            }
         }
     } else {
         ESP_LOGE(TAG, "recognition request failed: %s", esp_err_to_name(err));

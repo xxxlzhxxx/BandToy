@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "song_runtime.h"
+
 namespace bandtoy {
 
 struct RecognitionResult {
@@ -14,6 +16,7 @@ struct RecognitionResult {
     bool has_response;
     char response_phrase_id[32];
     uint32_t response_delay_ms;
+    RuntimePhrase response_phrase;
 };
 
 class RecognitionClient {

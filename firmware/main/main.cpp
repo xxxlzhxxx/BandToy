@@ -137,7 +137,6 @@ void manual_call_response_task(void*) {
 void leader_task(void*) {
     const Song& song = twinkle_song();
     const Track& harmony = song.harmony;
-    const Track& response = twinkle_response_line_2();
     int16_t* listen_buffer = static_cast<int16_t*>(
         heap_caps_malloc(kListenSamples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (listen_buffer == nullptr) {
@@ -182,12 +181,13 @@ void leader_task(void*) {
         g_display.success();
         if (result.has_response) {
             const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
-            ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu",
-                     result.response_phrase_id, static_cast<unsigned long>(response_delay_ms));
+            ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu notes=%u",
+                     result.response_phrase_id, static_cast<unsigned long>(response_delay_ms),
+                     result.response_phrase.note_count);
             g_life.joining(response_delay_ms);
             g_life.playing();
             g_display.playing();
-            g_runtime.play_track(song, response);
+            g_runtime.play_phrase(result.response_phrase);
             g_life.idle();
             g_display.idle();
             vTaskDelay(pdMS_TO_TICKS(1000));

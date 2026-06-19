@@ -9,6 +9,31 @@ namespace {
 
 constexpr const char* TAG = "song_runtime";
 
+uint16_t note_to_frequency_hz(const char* note) {
+    if (note == nullptr || note[0] == '\0') {
+        return kRest;
+    }
+    const int octave = note[1] >= '0' && note[1] <= '9' ? note[1] - '0' : 4;
+    switch (note[0]) {
+        case 'C':
+            return octave == 5 ? 523 : 262;
+        case 'D':
+            return octave == 5 ? 587 : 294;
+        case 'E':
+            return octave == 5 ? 659 : 330;
+        case 'F':
+            return octave == 5 ? 698 : 349;
+        case 'G':
+            return octave == 5 ? 784 : 392;
+        case 'A':
+            return octave == 5 ? 880 : 440;
+        case 'B':
+            return octave == 5 ? 988 : 494;
+        default:
+            return kRest;
+    }
+}
+
 constexpr NoteEvent kTwinkleMelody[] = {
     {262, 100}, {262, 100}, {392, 100}, {392, 100}, {440, 100}, {440, 100}, {392, 200},
     {349, 100}, {349, 100}, {330, 100}, {330, 100}, {294, 100}, {294, 100}, {262, 200},
@@ -75,6 +100,34 @@ void SongRuntime::play_track(const Song& song, const Track& track) {
     audio_.silence(20);
     playing_ = false;
     ESP_LOGI(TAG, "%s finished %s", kCharacter.display_name, track.name);
+}
+
+void SongRuntime::play_phrase(const RuntimePhrase& phrase) {
+    ESP_LOGI(TAG, "%s starts phrase %s / %s notes=%u",
+             kCharacter.display_name, phrase.phrase_id, phrase.instrument, phrase.note_count);
+    playing_ = true;
+    uint32_t cursor_ms = 0;
+
+    for (uint16_t i = 0; i < phrase.note_count && playing_; ++i) {
+        const PhraseNoteEvent& note = phrase.notes[i];
+        if (note.start_ms > cursor_ms) {
+            audio_.silence(note.start_ms - cursor_ms);
+            cursor_ms = note.start_ms;
+        }
+        const uint16_t frequency_hz = note_to_frequency_hz(note.note);
+        const uint32_t tone_ms = note.duration_ms * 88 / 100;
+        const uint32_t gap_ms = note.duration_ms - tone_ms;
+        audio_.play_tone(frequency_hz, tone_ms);
+        audio_.silence(gap_ms);
+        cursor_ms += note.duration_ms;
+    }
+
+    if (phrase.duration_ms > cursor_ms) {
+        audio_.silence(phrase.duration_ms - cursor_ms);
+    }
+    audio_.silence(20);
+    playing_ = false;
+    ESP_LOGI(TAG, "%s finished phrase %s", kCharacter.display_name, phrase.phrase_id);
 }
 
 void SongRuntime::record(int16_t* samples, int sample_count) {

@@ -42,8 +42,7 @@ Last updated: 2026-06-19
 - HTTP recognition client that uploads raw 16-bit PCM.
 - Server-driven call-and-response: when the server recognizes `phrase_1`, it
   returns `response_phrase_id=response_1`, a short delay, and a response phrase
-  payload. The firmware currently uses the returned response id to select the
-  built-in response track.
+  payload. The firmware parses the returned phrase notes and plays them directly.
 - Latency-compensated harmony joining when recognition succeeds. The firmware
   combines the server's estimated song position at recording end with local
   recognition round-trip time, then schedules playback at the next bar boundary.

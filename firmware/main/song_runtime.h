@@ -19,6 +19,21 @@ struct Track {
     uint16_t note_count;
 };
 
+struct PhraseNoteEvent {
+    char note[4];
+    uint32_t start_ms;
+    uint32_t duration_ms;
+    uint8_t velocity;
+};
+
+struct RuntimePhrase {
+    char phrase_id[32];
+    char instrument[16];
+    PhraseNoteEvent notes[12];
+    uint16_t note_count;
+    uint32_t duration_ms;
+};
+
 struct Song {
     uint16_t song_id;
     const char* title;
@@ -31,6 +46,7 @@ class SongRuntime {
 public:
     void begin();
     void play_track(const Song& song, const Track& track);
+    void play_phrase(const RuntimePhrase& phrase);
     void record(int16_t* samples, int sample_count);
     void stop();
     bool is_playing() const { return playing_; }
