@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import struct
+import sys
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -55,6 +56,20 @@ def attach_response(result: dict) -> dict:
         "notes": TWINKLE_RESPONSE_1_NOTES,
     }
     return result
+
+
+def client_response(result: dict) -> dict:
+    response = {
+        "recognized": result.get("recognized", False),
+        "song_id": result.get("song_id", 0),
+        "confidence": result.get("confidence", 0.0),
+    }
+    if result.get("recognized"):
+        response["heard_phrase_id"] = result.get("heard_phrase_id", "")
+        response["response_phrase_id"] = result.get("response_phrase_id", "")
+        response["response_delay_ms"] = result.get("response_delay_ms", 500)
+        response["response_phrase"] = result.get("response_phrase", {})
+    return response
 
 
 def parse_audio(body: bytes, content_type: str) -> tuple[list[float], int]:
@@ -255,7 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pitched_frames": sum(1 for note in melody if note is not None),
                 "first_pitch_ms": (pitched_indices[0] * 125) if pitched_indices else None,
             }
-            self.send_json(result)
+            self.send_json(client_response(result))
             print(json.dumps(result), flush=True)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=400)
@@ -265,8 +280,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:  # type: ignore[override]
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def main() -> None:
@@ -274,7 +301,7 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = QuietThreadingHTTPServer((args.host, args.port), Handler)
     print(f"BandToy recognition server listening on http://{args.host}:{args.port}", flush=True)
     server.serve_forever()
 
