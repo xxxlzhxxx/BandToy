@@ -28,6 +28,7 @@ BandToy/
   assets/               Local test assets, including a reference Twinkle WAV
   docs/                 Product and architecture notes
   firmware/             ESP-IDF PoC firmware
+  phrase_runtime/       Desktop call-and-response Phrase Runtime PoC
   server/               Local recognition server
   tools/                Helper scripts
 ```
@@ -36,6 +37,7 @@ BandToy/
 
 Implemented:
 
+- Desktop Phrase Runtime PoC for music call-and-response.
 - ESP32-S3-BOX-3 audio output through ES8311.
 - ESP32-S3-BOX-3 microphone recording through ES7210.
 - BOOT/GPIO0-triggered 4-second listening window.
@@ -127,3 +129,22 @@ afplay assets/reference_twinkle_96bpm.wav
 - BOOT button on GPIO0.
 
 These pins are intentionally centralized in `firmware/main/pins.h`.
+
+## Phrase Runtime Quick Start
+
+Run the single-machine call-and-response demo:
+
+```bash
+cd BandToy
+c++ -std=c++17 phrase_runtime/phrase_runtime.cpp phrase_runtime/call_response_demo.cpp -o /tmp/bandtoy_phrase_demo
+/tmp/bandtoy_phrase_demo
+```
+
+Expected shape:
+
+```text
+[0ms] A starts phrase_1
+[4200ms] A finished phrase_1
+[4700ms] B starts response_1
+[8200ms] B finished response_1
+```

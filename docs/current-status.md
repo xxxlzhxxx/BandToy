@@ -1,8 +1,25 @@
 # Current Status
 
-Last updated: 2026-06-16
+Last updated: 2026-06-19
 
 ## Implemented
+
+### Phrase Runtime
+
+- Single-machine call-and-response simulation.
+- `NoteEvent`, `Phrase`, and `ResponseRule` data structures.
+- `PhrasePlayer` for phrase playback state and note-event dispatch.
+- `ResponseEngine` for phrase-to-response mapping.
+- `InteractionRuntime` for scheduling phrase starts after phrase-finished
+  events.
+- Demo roles:
+  - Character A: `music_box`
+  - Character B: `violin`
+- Demo flow:
+  - A plays `phrase_1`
+  - B responds with `response_1`
+  - A plays `phrase_2`
+  - B responds with `response_2`
 
 ### Hardware Target
 
