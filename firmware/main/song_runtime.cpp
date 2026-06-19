@@ -28,6 +28,16 @@ constexpr NoteEvent kTwinkleHarmony[] = {
     {175, 200}, {165, 200}, {147, 200}, {131, 200},
 };
 
+constexpr NoteEvent kTwinkleResponseLine2[] = {
+    {349, 100}, {349, 100}, {330, 100}, {330, 100}, {294, 100}, {294, 100}, {262, 200},
+};
+
+constexpr Track kTwinkleResponseTrack = {
+    .name = "response_line_2",
+    .notes = kTwinkleResponseLine2,
+    .note_count = sizeof(kTwinkleResponseLine2) / sizeof(kTwinkleResponseLine2[0]),
+};
+
 constexpr Song kTwinkle = {
     .song_id = 1,
     .title = "Twinkle Twinkle Little Star",
@@ -85,6 +95,10 @@ const Track& select_track(const Song& song) {
         return song.melody;
     }
     return song.harmony;
+}
+
+const Track& twinkle_response_line_2() {
+    return kTwinkleResponseTrack;
 }
 
 uint32_t bar_duration_ms(uint16_t bpm, uint8_t beats_per_bar) {

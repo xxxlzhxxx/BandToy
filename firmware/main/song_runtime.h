@@ -42,6 +42,7 @@ private:
 
 const Song& twinkle_song();
 const Track& select_track(const Song& song);
+const Track& twinkle_response_line_2();
 uint32_t bar_duration_ms(uint16_t bpm, uint8_t beats_per_bar = 4);
 
 }  // namespace bandtoy

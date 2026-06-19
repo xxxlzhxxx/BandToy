@@ -31,6 +31,31 @@ TWINKLE_NOTES = [
     (65, 1), (65, 1), (64, 1), (64, 1), (62, 1), (62, 1), (60, 2),
 ]
 
+TWINKLE_RESPONSE_1_NOTES = [
+    {"note": "F4", "start_ms": 0, "duration_ms": int(BEAT_MS), "velocity": 90},
+    {"note": "F4", "start_ms": int(BEAT_MS), "duration_ms": int(BEAT_MS), "velocity": 90},
+    {"note": "E4", "start_ms": int(BEAT_MS * 2), "duration_ms": int(BEAT_MS), "velocity": 88},
+    {"note": "E4", "start_ms": int(BEAT_MS * 3), "duration_ms": int(BEAT_MS), "velocity": 88},
+    {"note": "D4", "start_ms": int(BEAT_MS * 4), "duration_ms": int(BEAT_MS), "velocity": 84},
+    {"note": "D4", "start_ms": int(BEAT_MS * 5), "duration_ms": int(BEAT_MS), "velocity": 84},
+    {"note": "C4", "start_ms": int(BEAT_MS * 6), "duration_ms": int(BEAT_MS * 2), "velocity": 80},
+]
+
+
+def attach_response(result: dict) -> dict:
+    if not result.get("recognized"):
+        return result
+    result["heard_phrase_id"] = "phrase_1"
+    result["response_phrase_id"] = "response_1"
+    result["response_delay_ms"] = 500
+    result["response_phrase"] = {
+        "phrase_id": "response_1",
+        "instrument": "music_box",
+        "duration_ms": int(BEAT_MS * 8),
+        "notes": TWINKLE_RESPONSE_1_NOTES,
+    }
+    return result
+
 
 def parse_audio(body: bytes, content_type: str) -> tuple[list[float], int]:
     if body[:4] == b"RIFF" or "wav" in content_type:
@@ -220,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
             samples = resample_linear(samples, rate)
             melody = extract_melody(samples)
             audio_duration_ms = int(len(samples) * 1000 / SAMPLE_RATE)
-            result = match_position(melody, audio_duration_ms)
+            result = attach_response(match_position(melody, audio_duration_ms))
             pitched_indices = [index for index, note in enumerate(melody) if note is not None]
             result["debug"] = {
                 "bytes": len(body),

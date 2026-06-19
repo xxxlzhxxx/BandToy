@@ -85,6 +85,29 @@ float parse_float(const char* text, const char* key, float fallback) {
     }
     return strtof(colon + 1, nullptr);
 }
+
+bool parse_string(const char* text, const char* key, char* out, size_t out_size) {
+    const char* found = strstr(text, key);
+    if (found == nullptr || out == nullptr || out_size == 0) {
+        return false;
+    }
+    const char* colon = strchr(found, ':');
+    if (colon == nullptr) {
+        return false;
+    }
+    const char* first_quote = strchr(colon, '"');
+    if (first_quote == nullptr) {
+        return false;
+    }
+    const char* second_quote = strchr(first_quote + 1, '"');
+    if (second_quote == nullptr || second_quote <= first_quote + 1) {
+        return false;
+    }
+    const size_t len = std::min(static_cast<size_t>(second_quote - first_quote - 1), out_size - 1);
+    memcpy(out, first_quote + 1, len);
+    out[len] = '\0';
+    return true;
+}
 }  // namespace
 
 void RecognitionClient::begin() {
@@ -134,13 +157,16 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         .position_ms = 0,
         .position_at_record_end_ms = 0,
         .join_after_ms = 0,
+        .has_response = false,
+        .response_phrase_id = {},
+        .response_delay_ms = 0,
     };
     if (!wifi_ready_) {
         ESP_LOGW(TAG, "recognition skipped: wifi not ready");
         return result;
     }
 
-    char response[512] = {};
+    char response[1536] = {};
     HttpResponseBuffer response_buffer = {
         .data = response,
         .capacity = sizeof(response),
@@ -174,6 +200,9 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
             result.position_ms = parse_u32(response, "\"position_ms\"", 0);
             result.position_at_record_end_ms = parse_u32(response, "\"position_at_record_end_ms\"", 0);
             result.join_after_ms = parse_u32(response, "\"join_after_ms\"", 0);
+            result.response_delay_ms = parse_u32(response, "\"response_delay_ms\"", 0);
+            result.has_response = parse_string(response, "\"response_phrase_id\"", result.response_phrase_id,
+                                               sizeof(result.response_phrase_id));
         }
     } else {
         ESP_LOGE(TAG, "recognition request failed: %s", esp_err_to_name(err));

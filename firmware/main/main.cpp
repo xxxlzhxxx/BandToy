@@ -25,6 +25,8 @@ constexpr int kListenSamples = static_cast<int>((static_cast<uint64_t>(kListenDu
 constexpr float kMinimumConfidence = 0.45f;
 constexpr uint32_t kMinimumJoinDelayMs = 250;
 constexpr uint32_t kPlaybackStartupCompensationMs = 80;
+constexpr bool kManualCallResponseTest = false;
+constexpr uint32_t kFallbackResponseDelayMs = 500;
 
 SongRuntime g_runtime;
 DeviceSync g_sync;
@@ -104,9 +106,38 @@ void on_start_message(const SyncStartMessage& message) {
 #endif
 
 #if BANDTOY_ROLE_LEADER
+void manual_call_response_task(void*) {
+    const Song& song = twinkle_song();
+    const Track& response = twinkle_response_line_2();
+
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    ESP_LOGI(TAG, "%s is ready for manual call-and-response", kCharacter.display_name);
+
+    while (true) {
+        g_life.listening();
+        g_display.idle();
+        ESP_LOGI(TAG, "play Twinkle phrase_1 externally, then press BOOT/GPIO0 for ESP32 response");
+        wait_for_play_button_press();
+
+        g_display.success();
+        ESP_LOGI(TAG, "heard phrase_1 finished; responding in %lu ms",
+                 static_cast<unsigned long>(kFallbackResponseDelayMs));
+        g_life.joining(kFallbackResponseDelayMs);
+
+        g_life.playing();
+        g_display.playing();
+        g_runtime.play_track(song, response);
+        g_life.idle();
+        g_display.idle();
+
+        vTaskDelay(pdMS_TO_TICKS(800));
+    }
+}
+
 void leader_task(void*) {
     const Song& song = twinkle_song();
     const Track& harmony = song.harmony;
+    const Track& response = twinkle_response_line_2();
     int16_t* listen_buffer = static_cast<int16_t*>(
         heap_caps_malloc(kListenSamples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (listen_buffer == nullptr) {
@@ -123,7 +154,7 @@ void leader_task(void*) {
 
     while (true) {
         g_life.listening();
-        ESP_LOGI(TAG, "press BOOT/GPIO0, then play Twinkle externally for %lu ms",
+        ESP_LOGI(TAG, "press BOOT/GPIO0, then play Twinkle phrase_1 externally for %lu ms",
                  static_cast<unsigned long>(kListenDurationMs));
         wait_for_play_button_press();
 
@@ -149,6 +180,20 @@ void leader_task(void*) {
         }
 
         g_display.success();
+        if (result.has_response) {
+            const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
+            ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu",
+                     result.response_phrase_id, static_cast<unsigned long>(response_delay_ms));
+            g_life.joining(response_delay_ms);
+            g_life.playing();
+            g_display.playing();
+            g_runtime.play_track(song, response);
+            g_life.idle();
+            g_display.idle();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         const uint32_t recognition_roundtrip_ms = recognition_done_ms - record_end_ms;
         const uint32_t record_end_position_ms = result.position_at_record_end_ms != 0
             ? result.position_at_record_end_ms
@@ -218,8 +263,12 @@ extern "C" void app_main(void) {
     g_runtime.begin();
 
 #if BANDTOY_ROLE_LEADER
-    g_recognition.begin();
-    xTaskCreate(leader_task, "leader_task", 4096, nullptr, 5, nullptr);
+    if (kManualCallResponseTest) {
+        xTaskCreate(manual_call_response_task, "manual_response", 4096, nullptr, 5, nullptr);
+    } else {
+        g_recognition.begin();
+        xTaskCreate(leader_task, "leader_task", 4096, nullptr, 5, nullptr);
+    }
 #else
     g_start_queue = xQueueCreate(4, sizeof(SyncStartMessage));
     ESP_ERROR_CHECK(g_sync.begin(on_start_message));

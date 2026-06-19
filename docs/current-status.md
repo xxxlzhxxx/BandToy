@@ -40,6 +40,10 @@ Last updated: 2026-06-19
 - BOOT-triggered 4-second microphone recording.
 - Audio statistics logging after recording.
 - HTTP recognition client that uploads raw 16-bit PCM.
+- Server-driven call-and-response: when the server recognizes `phrase_1`, it
+  returns `response_phrase_id=response_1`, a short delay, and a response phrase
+  payload. The firmware currently uses the returned response id to select the
+  built-in response track.
 - Latency-compensated harmony joining when recognition succeeds. The firmware
   combines the server's estimated song position at recording end with local
   recognition round-trip time, then schedules playback at the next bar boundary.
@@ -71,6 +75,10 @@ Last updated: 2026-06-19
 - Lightweight frame-level pitch estimation.
 - Pitch contour matching against a built-in Twinkle reference.
 - Response fields:
+  - `heard_phrase_id`
+  - `response_phrase_id`
+  - `response_delay_ms`
+  - `response_phrase`
   - `song_id`
   - `title`
   - `confidence`
@@ -85,6 +93,8 @@ Last updated: 2026-06-19
 
 - `assets/reference_twinkle_96bpm.wav`: generated C-major, 96 BPM reference
   melody for repeatable recognition tests.
+- `assets/twinkle_response_line_2.wav`: generated response phrase for the second
+  line of Twinkle.
 
 ## Verified Locally
 
@@ -94,7 +104,8 @@ Last updated: 2026-06-19
 - WiFi connects to the local network when configured.
 - ESP32 posts microphone audio to the server.
 - Server returns `recognized: true` for the generated Twinkle reference audio.
-- Device waits for `join_after_ms` and plays the harmony track.
+- Server returns `response_phrase_id=response_1` for the first Twinkle phrase.
+- Device waits for `response_delay_ms` and plays the second-line response track.
 
 Example successful recognition:
 
@@ -109,6 +120,9 @@ Example successful recognition:
   "beat_in_bar": 0.8,
   "join_after_ms": 2000,
   "recognized": true,
+  "heard_phrase_id": "phrase_1",
+  "response_phrase_id": "response_1",
+  "response_delay_ms": 500,
   "debug": {
     "bytes": 192000,
     "samples": 64000,

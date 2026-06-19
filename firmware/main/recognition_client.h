@@ -11,6 +11,9 @@ struct RecognitionResult {
     uint32_t position_ms;
     uint32_t position_at_record_end_ms;
     uint32_t join_after_ms;
+    bool has_response;
+    char response_phrase_id[32];
+    uint32_t response_delay_ms;
 };
 
 class RecognitionClient {
