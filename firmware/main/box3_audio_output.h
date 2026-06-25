@@ -4,7 +4,6 @@
 
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
-#include "driver/i2s_tdm.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 
@@ -16,11 +15,17 @@ public:
     void play_tone(uint16_t frequency_hz, uint32_t duration_ms);
     void silence(uint32_t duration_ms);
     void record(int16_t* samples, int sample_count);
+    int record_until_silence(int16_t* samples,
+                             int max_sample_count,
+                             uint32_t silence_ms,
+                             uint32_t max_wait_ms);
 
 private:
+    void init_input();
     void write_samples(const int16_t* samples, int sample_count);
 
     bool ready_ = false;
+    bool input_ready_ = false;
     float phase_ = 0.0f;
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     i2s_chan_handle_t tx_handle_ = nullptr;

@@ -5,5 +5,9 @@ firmware/sdkconfig.old
 firmware/main/bandtoy_config.h
 logs/
 memory/
+server/pipeline_data/
+.env
+.env.*
+!.env.example
 __pycache__/
 .DS_Store

@@ -20,12 +20,16 @@ namespace {
 
 constexpr const char* TAG = "bandtoy";
 constexpr uint8_t kJoinAfterBars = 1;
-constexpr uint32_t kListenDurationMs = 4000;
-constexpr int kListenSamples = static_cast<int>((static_cast<uint64_t>(kListenDurationMs) * kBox3AudioSampleRate) / 1000);
-constexpr float kMinimumConfidence = 0.45f;
+constexpr uint32_t kMaxListenDurationMs = 10000;
+constexpr uint32_t kNoSoundSessionTimeoutMs = 10000;
+constexpr uint32_t kEndOfPhraseSilenceMs = 1000;
+constexpr int kListenSamples = static_cast<int>((static_cast<uint64_t>(kMaxListenDurationMs) * kBox3AudioSampleRate) / 1000);
+constexpr float kMinimumConfidence = 0.60f;
 constexpr uint32_t kMinimumJoinDelayMs = 250;
 constexpr uint32_t kPlaybackStartupCompensationMs = 80;
 constexpr bool kManualCallResponseTest = false;
+constexpr uint32_t kAutoRestartAfterNoSoundMs = 1000;
+constexpr uint32_t kPostPlaybackCooldownMs = 1800;
 constexpr uint32_t kFallbackResponseDelayMs = 500;
 
 SongRuntime g_runtime;
@@ -150,77 +154,90 @@ void leader_task(void*) {
 
     vTaskDelay(pdMS_TO_TICKS(1500));
     ESP_LOGI(TAG, "%s is ready as listener", kCharacter.display_name);
+    g_runtime.play_ready_chime();
 
     while (true) {
-        g_life.listening();
-        ESP_LOGI(TAG, "press BOOT/GPIO0, then play Twinkle phrase_1 externally for %lu ms",
-                 static_cast<unsigned long>(kListenDurationMs));
-        wait_for_play_button_press();
+        ESP_LOGI(TAG,
+                 "auto continuous call-and-response started; phrase ends after %lu ms silence, listening rests after %lu ms no sound",
+                 static_cast<unsigned long>(kEndOfPhraseSilenceMs),
+                 static_cast<unsigned long>(kNoSoundSessionTimeoutMs));
 
-        g_display.listening();
-        ESP_LOGI(TAG, "listening...");
-        const uint32_t record_start_ms = now_ms();
-        g_runtime.record(listen_buffer, kListenSamples);
-        const uint32_t record_end_ms = now_ms();
-        log_audio_stats(listen_buffer, kListenSamples);
-        g_display.recognizing();
-        ESP_LOGI(TAG, "uploading recognition audio");
+        while (true) {
+            g_life.listening();
+            g_display.listening();
+            ESP_LOGI(TAG, "listening until %lu ms silence...",
+                     static_cast<unsigned long>(kEndOfPhraseSilenceMs));
+            const uint32_t record_start_ms = now_ms();
+            const int recorded_samples = g_runtime.record_until_silence(
+                listen_buffer, kListenSamples, kEndOfPhraseSilenceMs, kNoSoundSessionTimeoutMs);
+            const uint32_t record_end_ms = now_ms();
+            if (recorded_samples <= 0) {
+                ESP_LOGI(TAG, "continuous listening session stopped: no sound for %lu ms",
+                         static_cast<unsigned long>(kNoSoundSessionTimeoutMs));
+                g_life.idle();
+                g_display.idle();
+                vTaskDelay(pdMS_TO_TICKS(kAutoRestartAfterNoSoundMs));
+                break;
+            }
+            log_audio_stats(listen_buffer, recorded_samples);
+            g_display.recognizing();
+            ESP_LOGI(TAG, "uploading recognition audio samples=%d duration_ms=%lu",
+                     recorded_samples,
+                     static_cast<unsigned long>((static_cast<uint64_t>(recorded_samples) * 1000) / kBox3AudioSampleRate));
 
-        RecognitionResult result = g_recognition.recognize(listen_buffer, kListenSamples, kBox3AudioSampleRate);
-        const uint32_t recognition_done_ms = now_ms();
-        if (!result.recognized || result.song_id != song.song_id || result.confidence < kMinimumConfidence) {
-            g_display.failure();
-            ESP_LOGW(TAG, "not joining: recognized=%d song_id=%u confidence=%.2f",
-                     result.recognized, result.song_id, result.confidence);
-            g_life.idle();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            g_display.idle();
-            continue;
-        }
+            RecognitionResult result = g_recognition.recognize(listen_buffer, recorded_samples, kBox3AudioSampleRate);
+            const uint32_t recognition_done_ms = now_ms();
+            if (!result.recognized || result.song_id != song.song_id || result.confidence < kMinimumConfidence) {
+                g_display.failure();
+                ESP_LOGW(TAG, "not playing: recognized=%d song_id=%u confidence=%.2f threshold=%.2f",
+                         result.recognized, result.song_id, result.confidence, static_cast<double>(kMinimumConfidence));
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
 
-        g_display.success();
-        if (result.has_response) {
-            const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
-            ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu notes=%u",
-                     result.response_phrase_id, static_cast<unsigned long>(response_delay_ms),
-                     result.response_phrase.note_count);
-            g_life.joining(response_delay_ms);
+            g_display.success();
+            if (result.has_response) {
+                const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
+                ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu notes=%u",
+                         result.response_phrase_id, static_cast<unsigned long>(response_delay_ms),
+                         result.response_phrase.note_count);
+                g_life.joining(response_delay_ms);
+                g_life.playing();
+                g_display.playing();
+                g_runtime.play_phrase(result.response_phrase);
+                vTaskDelay(pdMS_TO_TICKS(kPostPlaybackCooldownMs));
+                g_life.listening();
+                g_display.listening();
+                continue;
+            }
+
+            const uint32_t recognition_roundtrip_ms = recognition_done_ms - record_end_ms;
+            const uint32_t record_end_position_ms = result.position_at_record_end_ms != 0
+                ? result.position_at_record_end_ms
+                : result.position_ms + (record_end_ms - record_start_ms);
+            const uint32_t compensated_join_ms = latency_compensated_join_delay(record_end_position_ms, recognition_roundtrip_ms, song.bpm);
+            ESP_LOGI(TAG,
+                     "recognized Twinkle confidence=%.2f position_ms=%lu record_end_position_ms=%lu server_join_ms=%lu recognition_roundtrip_ms=%lu compensated_join_ms=%lu",
+                     result.confidence,
+                     static_cast<unsigned long>(result.position_ms),
+                     static_cast<unsigned long>(record_end_position_ms),
+                     static_cast<unsigned long>(result.join_after_ms),
+                     static_cast<unsigned long>(recognition_roundtrip_ms),
+                     static_cast<unsigned long>(compensated_join_ms));
+            ESP_LOGI(TAG, "recording_ms=%lu recognition_roundtrip_ms=%lu",
+                     static_cast<unsigned long>(record_end_ms - record_start_ms),
+                     static_cast<unsigned long>(recognition_roundtrip_ms));
+            if (compensated_join_ms > 0) {
+                g_life.joining(compensated_join_ms);
+            }
+
             g_life.playing();
             g_display.playing();
-            g_runtime.play_phrase(result.response_phrase);
-            g_life.idle();
-            g_display.idle();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
+            g_runtime.play_track(song, harmony);
+            vTaskDelay(pdMS_TO_TICKS(kPostPlaybackCooldownMs));
+            g_life.listening();
+            g_display.listening();
         }
-
-        const uint32_t recognition_roundtrip_ms = recognition_done_ms - record_end_ms;
-        const uint32_t record_end_position_ms = result.position_at_record_end_ms != 0
-            ? result.position_at_record_end_ms
-            : result.position_ms + (record_end_ms - record_start_ms);
-        const uint32_t compensated_join_ms = latency_compensated_join_delay(record_end_position_ms, recognition_roundtrip_ms, song.bpm);
-        ESP_LOGI(TAG,
-                 "recognized Twinkle confidence=%.2f position_ms=%lu record_end_position_ms=%lu server_join_ms=%lu recognition_roundtrip_ms=%lu compensated_join_ms=%lu",
-                 result.confidence,
-                 static_cast<unsigned long>(result.position_ms),
-                 static_cast<unsigned long>(record_end_position_ms),
-                 static_cast<unsigned long>(result.join_after_ms),
-                 static_cast<unsigned long>(recognition_roundtrip_ms),
-                 static_cast<unsigned long>(compensated_join_ms));
-        ESP_LOGI(TAG, "recording_ms=%lu recognition_roundtrip_ms=%lu",
-                 static_cast<unsigned long>(record_end_ms - record_start_ms),
-                 static_cast<unsigned long>(recognition_roundtrip_ms));
-        if (compensated_join_ms > 0) {
-            g_life.joining(compensated_join_ms);
-        }
-
-        g_life.playing();
-        g_display.playing();
-        g_runtime.play_track(song, harmony);
-        g_life.idle();
-        g_display.idle();
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 #else

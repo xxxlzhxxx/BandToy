@@ -45,9 +45,14 @@ struct Song {
 class SongRuntime {
 public:
     void begin();
+    void play_ready_chime();
     void play_track(const Song& song, const Track& track);
     void play_phrase(const RuntimePhrase& phrase);
     void record(int16_t* samples, int sample_count);
+    int record_until_silence(int16_t* samples,
+                             int max_sample_count,
+                             uint32_t silence_ms,
+                             uint32_t max_wait_ms);
     void stop();
     bool is_playing() const { return playing_; }
 

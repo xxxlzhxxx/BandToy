@@ -3,8 +3,13 @@
 #include <math.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include "driver/i2s_std.h"
+#include "driver/i2s_tdm.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "pins.h"
@@ -15,14 +20,28 @@ namespace {
 constexpr const char* TAG = "box3_audio_output";
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr int kChunkSamples = 256;
-constexpr int16_t kAmplitude = 10500;
+constexpr int16_t kAmplitude = 14500;
 constexpr int kAttackSamples = kBox3AudioSampleRate * 4 / 1000;
 constexpr int kReleaseSamples = kBox3AudioSampleRate * 18 / 1000;
 constexpr float kMusicBoxDecayMs = 760.0f;
 constexpr uint8_t kEs8311Address = ES8311_CODEC_DEFAULT_ADDR;
 constexpr uint8_t kEs7210Address = ES7210_CODEC_DEFAULT_ADDR;
 constexpr int kOutputVolume = 88;
-constexpr int kInputGain = 50;
+constexpr int kInputGain = 60;
+constexpr int kVadChunkMs = 100;
+constexpr int kVadChunkSamples = static_cast<int>((static_cast<uint64_t>(kVadChunkMs) * kBox3AudioSampleRate) / 1000);
+constexpr int kVadStartRms = 600;
+constexpr int kVadStopRms = 380;
+constexpr uint32_t kVadStartConsecutiveMs = 100;
+constexpr uint32_t kVadMinActiveMs = 500;
+constexpr uint32_t kVadMinRecordMs = 1200;
+constexpr uint32_t kVadPreRollMs = 600;
+constexpr uint32_t kVadStartupIgnoreMs = 500;
+constexpr int kVadPreRollChunks = static_cast<int>(kVadPreRollMs / kVadChunkMs);
+
+bool codec_ctrl_ready(const audio_codec_ctrl_if_t* ctrl) {
+    return ctrl != nullptr && ctrl->read_reg != nullptr && ctrl->write_reg != nullptr;
+}
 }  // namespace
 
 void Box3AudioOutput::begin() {
@@ -52,20 +71,9 @@ void Box3AudioOutput::begin() {
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_));
 
     i2s_std_config_t std_cfg = {};
-    std_cfg.clk_cfg.sample_rate_hz = kBox3AudioSampleRate;
-    std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
-    std_cfg.clk_cfg.ext_clk_freq_hz = 0;
+    std_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(kBox3AudioSampleRate);
     std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-    std_cfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
-    std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
-    std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
-    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
-    std_cfg.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_16BIT;
-    std_cfg.slot_cfg.ws_pol = false;
-    std_cfg.slot_cfg.bit_shift = true;
-    std_cfg.slot_cfg.left_align = true;
-    std_cfg.slot_cfg.big_endian = false;
-    std_cfg.slot_cfg.bit_order_lsb = false;
+    std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
     std_cfg.gpio_cfg.mclk = kBox3AudioMclkPin;
     std_cfg.gpio_cfg.bclk = kBox3AudioBclkPin;
     std_cfg.gpio_cfg.ws = kBox3AudioWsPin;
@@ -129,6 +137,7 @@ void Box3AudioOutput::begin() {
     es8311_cfg.gpio_if = gpio_if_;
     es8311_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC;
     es8311_cfg.pa_pin = kBox3AudioPaPin;
+    es8311_cfg.pa_reverted = false;
     es8311_cfg.use_mclk = true;
     es8311_cfg.hw_gain.pa_voltage = 5.0;
     es8311_cfg.hw_gain.codec_dac_voltage = 3.3;
@@ -142,22 +151,6 @@ void Box3AudioOutput::begin() {
     output_dev_ = esp_codec_dev_new(&dev_cfg);
     ESP_ERROR_CHECK(output_dev_ != nullptr ? ESP_OK : ESP_FAIL);
 
-    i2c_cfg.addr = kEs7210Address;
-    in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    ESP_ERROR_CHECK(in_ctrl_if_ != nullptr ? ESP_OK : ESP_FAIL);
-
-    es7210_codec_cfg_t es7210_cfg = {};
-    es7210_cfg.ctrl_if = in_ctrl_if_;
-    es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
-    in_codec_if_ = es7210_codec_new(&es7210_cfg);
-    ESP_ERROR_CHECK(in_codec_if_ != nullptr ? ESP_OK : ESP_FAIL);
-
-    dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
-    dev_cfg.codec_if = in_codec_if_;
-    dev_cfg.data_if = data_if_;
-    input_dev_ = esp_codec_dev_new(&dev_cfg);
-    ESP_ERROR_CHECK(input_dev_ != nullptr ? ESP_OK : ESP_FAIL);
-
     esp_codec_dev_sample_info_t fs = {};
     fs.bits_per_sample = 16;
     fs.channel = 1;
@@ -166,6 +159,48 @@ void Box3AudioOutput::begin() {
     fs.mclk_multiple = 0;
     ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
     ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, kOutputVolume));
+    ESP_ERROR_CHECK(esp_codec_dev_set_out_mute(output_dev_, false));
+    gpio_set_direction(kBox3AudioPaPin, GPIO_MODE_OUTPUT);
+    gpio_set_level(kBox3AudioPaPin, 1);
+    ESP_LOGI(TAG, "forced speaker PA high on GPIO%u", static_cast<unsigned>(kBox3AudioPaPin));
+
+    ready_ = true;
+    ESP_LOGI(TAG, "ESP32-S3-BOX-3 speaker ready: %lu Hz volume=%d",
+             kBox3AudioSampleRate, kOutputVolume);
+}
+
+void Box3AudioOutput::init_input() {
+    if (input_ready_) {
+        return;
+    }
+    if (input_dev_ == nullptr) {
+        audio_codec_i2c_cfg_t i2c_cfg = {};
+        i2c_cfg.port = static_cast<i2c_port_t>(1);
+        i2c_cfg.addr = kEs7210Address;
+        i2c_cfg.bus_handle = i2c_bus_;
+        in_ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
+        ESP_ERROR_CHECK(in_ctrl_if_ != nullptr ? ESP_OK : ESP_FAIL);
+        ESP_LOGI(TAG, "ES7210 ctrl_if=%p read_reg_ready=%d write_reg_ready=%d",
+                 in_ctrl_if_,
+                 in_ctrl_if_ != nullptr && in_ctrl_if_->read_reg != nullptr,
+                 in_ctrl_if_ != nullptr && in_ctrl_if_->write_reg != nullptr);
+        ESP_ERROR_CHECK(codec_ctrl_ready(in_ctrl_if_) ? ESP_OK : ESP_FAIL);
+
+        es7210_codec_cfg_t es7210_cfg = {};
+        es7210_cfg.ctrl_if = in_ctrl_if_;
+        es7210_cfg.master_mode = false;
+        es7210_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
+        es7210_cfg.mclk_div = 256;
+        in_codec_if_ = es7210_codec_new(&es7210_cfg);
+        ESP_ERROR_CHECK(in_codec_if_ != nullptr ? ESP_OK : ESP_FAIL);
+
+        esp_codec_dev_cfg_t dev_cfg = {};
+        dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+        dev_cfg.codec_if = in_codec_if_;
+        dev_cfg.data_if = data_if_;
+        input_dev_ = esp_codec_dev_new(&dev_cfg);
+        ESP_ERROR_CHECK(input_dev_ != nullptr ? ESP_OK : ESP_FAIL);
+    }
 
     esp_codec_dev_sample_info_t in_fs = {};
     in_fs.bits_per_sample = 16;
@@ -176,9 +211,9 @@ void Box3AudioOutput::begin() {
     ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &in_fs));
     ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), kInputGain));
 
-    ready_ = true;
-    ESP_LOGI(TAG, "ESP32-S3-BOX-3 audio ready: %lu Hz volume=%d input_gain=%d",
-             kBox3AudioSampleRate, kOutputVolume, kInputGain);
+    input_ready_ = true;
+    ESP_LOGI(TAG, "ESP32-S3-BOX-3 microphone ready: %lu Hz input_gain=%d",
+             kBox3AudioSampleRate, kInputGain);
 }
 
 void Box3AudioOutput::play_tone(uint16_t frequency_hz, uint32_t duration_ms) {
@@ -251,11 +286,188 @@ void Box3AudioOutput::record(int16_t* samples, int sample_count) {
         memset(samples, 0, sample_count * sizeof(int16_t));
         return;
     }
+    init_input();
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, samples, sample_count * sizeof(int16_t)));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_close(input_dev_));
+    input_ready_ = false;
+    gpio_set_level(kBox3AudioPaPin, 1);
+}
+
+int Box3AudioOutput::record_until_silence(int16_t* samples,
+                                          int max_sample_count,
+                                          uint32_t silence_ms,
+                                          uint32_t max_wait_ms) {
+    if (!ready_ || samples == nullptr || max_sample_count <= 0) {
+        if (samples != nullptr && max_sample_count > 0) {
+            memset(samples, 0, max_sample_count * sizeof(int16_t));
+        }
+        return 0;
+    }
+
+    init_input();
+    int16_t* chunk = static_cast<int16_t*>(
+        heap_caps_malloc(kVadChunkSamples * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (chunk == nullptr) {
+        chunk = static_cast<int16_t*>(
+            heap_caps_malloc(kVadChunkSamples * sizeof(int16_t), MALLOC_CAP_8BIT));
+    }
+    if (chunk == nullptr) {
+        ESP_LOGE(TAG, "failed to allocate VAD chunk");
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_close(input_dev_));
+        input_ready_ = false;
+        return 0;
+    }
+    int written = 0;
+    uint32_t waited_ms = 0;
+    uint32_t recorded_ms = 0;
+    uint32_t active_ms = 0;
+    uint32_t quiet_ms = 0;
+    uint32_t start_candidate_ms = 0;
+    bool started = false;
+    int16_t* pre_roll = nullptr;
+    int pre_roll_index = 0;
+    int pre_roll_count = 0;
+
+    if (kVadPreRollChunks > 0) {
+        pre_roll = static_cast<int16_t*>(
+            heap_caps_malloc(kVadPreRollChunks * kVadChunkSamples * sizeof(int16_t),
+                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (pre_roll == nullptr) {
+            pre_roll = static_cast<int16_t*>(
+                heap_caps_malloc(kVadPreRollChunks * kVadChunkSamples * sizeof(int16_t),
+                                 MALLOC_CAP_8BIT));
+        }
+    }
+
+    for (uint32_t ignored_ms = 0;
+         ignored_ms < kVadStartupIgnoreMs && waited_ms < max_wait_ms;
+         ignored_ms += kVadChunkMs) {
+        memset(chunk, 0, kVadChunkSamples * sizeof(int16_t));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, chunk, kVadChunkSamples * sizeof(int16_t)));
+        waited_ms += kVadChunkMs;
+    }
+
+    while (written + kVadChunkSamples <= max_sample_count && waited_ms < max_wait_ms) {
+        memset(chunk, 0, kVadChunkSamples * sizeof(int16_t));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, chunk, kVadChunkSamples * sizeof(int16_t)));
+
+        int64_t sum_squares = 0;
+        int16_t peak = 0;
+        for (int i = 0; i < kVadChunkSamples; ++i) {
+            const int16_t sample = chunk[i];
+            const int16_t magnitude = sample < 0 ? -sample : sample;
+            if (magnitude > peak) {
+                peak = magnitude;
+            }
+            sum_squares += static_cast<int32_t>(sample) * static_cast<int32_t>(sample);
+        }
+        const float rms = sqrtf(static_cast<float>(sum_squares) / static_cast<float>(kVadChunkSamples));
+
+        if (!started) {
+            waited_ms += kVadChunkMs;
+            if (pre_roll != nullptr) {
+                memcpy(pre_roll + pre_roll_index * kVadChunkSamples,
+                       chunk,
+                       kVadChunkSamples * sizeof(int16_t));
+                pre_roll_index = (pre_roll_index + 1) % kVadPreRollChunks;
+                if (pre_roll_count < kVadPreRollChunks) {
+                    pre_roll_count += 1;
+                }
+            }
+            if (rms < kVadStartRms) {
+                if (waited_ms % 2000 == 0) {
+                    ESP_LOGI(TAG, "vad waiting: rms=%.1f peak=%d threshold=%d",
+                             static_cast<double>(rms), peak, kVadStartRms);
+                }
+                start_candidate_ms = 0;
+                continue;
+            }
+            start_candidate_ms += kVadChunkMs;
+            if (start_candidate_ms < kVadStartConsecutiveMs) {
+                continue;
+            }
+            started = true;
+            if (pre_roll != nullptr && pre_roll_count > 0) {
+                const int chunks_to_copy = std::min(pre_roll_count, max_sample_count / kVadChunkSamples);
+                const int first = (pre_roll_index - chunks_to_copy + kVadPreRollChunks) % kVadPreRollChunks;
+                for (int i = 0; i < chunks_to_copy && written + kVadChunkSamples <= max_sample_count; ++i) {
+                    const int source = (first + i) % kVadPreRollChunks;
+                    memcpy(samples + written,
+                           pre_roll + source * kVadChunkSamples,
+                           kVadChunkSamples * sizeof(int16_t));
+                    written += kVadChunkSamples;
+                    recorded_ms += kVadChunkMs;
+                }
+                active_ms += start_candidate_ms;
+            }
+            ESP_LOGI(TAG, "voice start detected: rms=%.1f peak=%d stable_ms=%lu pre_roll_ms=%lu",
+                     static_cast<double>(rms),
+                     peak,
+                     static_cast<unsigned long>(start_candidate_ms),
+                     static_cast<unsigned long>(pre_roll_count * kVadChunkMs));
+            continue;
+        }
+
+        memcpy(samples + written, chunk, kVadChunkSamples * sizeof(int16_t));
+        written += kVadChunkSamples;
+        recorded_ms += kVadChunkMs;
+
+        if (rms < kVadStopRms) {
+            quiet_ms += kVadChunkMs;
+        } else {
+            active_ms += kVadChunkMs;
+            quiet_ms = 0;
+        }
+
+        if (recorded_ms >= kVadMinRecordMs && quiet_ms >= silence_ms) {
+            if (active_ms < kVadMinActiveMs) {
+                ESP_LOGI(TAG, "discarding weak trigger and resuming listen: active_ms=%lu recorded_ms=%lu",
+                         static_cast<unsigned long>(active_ms),
+                         static_cast<unsigned long>(recorded_ms));
+                written = 0;
+                recorded_ms = 0;
+                active_ms = 0;
+                quiet_ms = 0;
+                start_candidate_ms = 0;
+                started = false;
+                pre_roll_index = 0;
+                pre_roll_count = 0;
+                continue;
+            }
+            ESP_LOGI(TAG, "voice end detected: quiet_ms=%lu recorded_ms=%lu",
+                     static_cast<unsigned long>(quiet_ms), static_cast<unsigned long>(recorded_ms));
+            break;
+        }
+    }
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_close(input_dev_));
+    input_ready_ = false;
+    gpio_set_level(kBox3AudioPaPin, 1);
+    free(pre_roll);
+    free(chunk);
+    if (written < max_sample_count) {
+        memset(samples + written, 0, (max_sample_count - written) * sizeof(int16_t));
+    }
+    if (started && active_ms < kVadMinActiveMs) {
+        ESP_LOGI(TAG, "discarding weak trigger at timeout: active_ms=%lu recorded_ms=%lu",
+                 static_cast<unsigned long>(active_ms), static_cast<unsigned long>(recorded_ms));
+        written = 0;
+    }
+    ESP_LOGI(TAG, "record_until_silence samples=%d waited_ms=%lu recorded_ms=%lu active_ms=%lu started=%d",
+             written,
+             static_cast<unsigned long>(waited_ms),
+             static_cast<unsigned long>(recorded_ms),
+             static_cast<unsigned long>(active_ms),
+             started);
+    return written;
 }
 
 void Box3AudioOutput::write_samples(const int16_t* samples, int sample_count) {
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, const_cast<int16_t*>(samples), sample_count * sizeof(int16_t)));
+    const int count = sample_count > kChunkSamples ? kChunkSamples : sample_count;
+    const int ret = esp_codec_dev_write(output_dev_, const_cast<int16_t*>(samples), count * sizeof(int16_t));
+    if (ret != ESP_CODEC_DEV_OK) {
+        ESP_LOGW(TAG, "audio write failed: %d", ret);
+    }
 }
 
 }  // namespace bandtoy

@@ -13,24 +13,59 @@ uint16_t note_to_frequency_hz(const char* note) {
     if (note == nullptr || note[0] == '\0') {
         return kRest;
     }
-    const int octave = note[1] >= '0' && note[1] <= '9' ? note[1] - '0' : 4;
+    int semitone = 0;
     switch (note[0]) {
-        case 'C':
-            return octave == 5 ? 523 : 262;
-        case 'D':
-            return octave == 5 ? 587 : 294;
-        case 'E':
-            return octave == 5 ? 659 : 330;
-        case 'F':
-            return octave == 5 ? 698 : 349;
-        case 'G':
-            return octave == 5 ? 784 : 392;
-        case 'A':
-            return octave == 5 ? 880 : 440;
-        case 'B':
-            return octave == 5 ? 988 : 494;
-        default:
-            return kRest;
+        case 'C': semitone = 0; break;
+        case 'D': semitone = 2; break;
+        case 'E': semitone = 4; break;
+        case 'F': semitone = 5; break;
+        case 'G': semitone = 7; break;
+        case 'A': semitone = 9; break;
+        case 'B': semitone = 11; break;
+        default: return kRest;
+    }
+
+    int cursor = 1;
+    if (note[cursor] == '#') {
+        semitone += 1;
+        cursor += 1;
+    } else if (note[cursor] == 'b') {
+        semitone -= 1;
+        cursor += 1;
+    }
+
+    const int octave = note[cursor] >= '0' && note[cursor] <= '9' ? note[cursor] - '0' : 4;
+    const int midi = (octave + 1) * 12 + semitone;
+    switch (midi) {
+        case 55: return 196;   // G3
+        case 57: return 220;   // A3
+        case 59: return 247;   // B3
+        case 60: return 262;   // C4
+        case 61: return 277;   // C#4/Db4
+        case 62: return 294;   // D4
+        case 63: return 311;   // D#4/Eb4
+        case 64: return 330;   // E4
+        case 65: return 349;   // F4
+        case 66: return 370;   // F#4/Gb4
+        case 67: return 392;   // G4
+        case 68: return 415;   // G#4/Ab4
+        case 69: return 440;   // A4
+        case 70: return 466;   // A#4/Bb4
+        case 71: return 494;   // B4
+        case 72: return 523;   // C5
+        case 73: return 554;   // C#5/Db5
+        case 74: return 587;   // D5
+        case 75: return 622;   // D#5/Eb5
+        case 76: return 659;   // E5
+        case 77: return 698;   // F5
+        case 78: return 740;   // F#5/Gb5
+        case 79: return 784;   // G5
+        case 80: return 831;   // G#5/Ab5
+        case 81: return 880;   // A5
+        case 82: return 932;   // A#5/Bb5
+        case 83: return 988;   // B5
+        case 84: return 1047;  // C6
+        default: return kRest;
     }
 }
 
@@ -85,6 +120,14 @@ void SongRuntime::begin() {
     audio_.begin();
 }
 
+void SongRuntime::play_ready_chime() {
+    ESP_LOGI(TAG, "%s plays ready chime", kCharacter.display_name);
+    audio_.play_tone(1000, 1000);
+    audio_.silence(120);
+    audio_.play_tone(1175, 360);
+    audio_.silence(80);
+}
+
 void SongRuntime::play_track(const Song& song, const Track& track) {
     ESP_LOGI(TAG, "%s starts %s / %s at %u BPM", kCharacter.display_name, song.title, track.name, song.bpm);
     playing_ = true;
@@ -132,6 +175,13 @@ void SongRuntime::play_phrase(const RuntimePhrase& phrase) {
 
 void SongRuntime::record(int16_t* samples, int sample_count) {
     audio_.record(samples, sample_count);
+}
+
+int SongRuntime::record_until_silence(int16_t* samples,
+                                      int max_sample_count,
+                                      uint32_t silence_ms,
+                                      uint32_t max_wait_ms) {
+    return audio_.record_until_silence(samples, max_sample_count, silence_ms, max_wait_ms);
 }
 
 void SongRuntime::stop() {

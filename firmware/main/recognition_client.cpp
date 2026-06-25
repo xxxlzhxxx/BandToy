@@ -41,11 +41,14 @@ esp_err_t http_event_handler(esp_http_client_event_t* event) {
     return ESP_OK;
 }
 
-void wifi_event_handler(void*, esp_event_base_t event_base, int32_t event_id, void*) {
+void wifi_event_handler(void*, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "wifi disconnected, reconnecting");
+        auto* event = static_cast<wifi_event_sta_disconnected_t*>(event_data);
+        xEventGroupClearBits(g_wifi_events, kWifiConnectedBit);
+        ESP_LOGW(TAG, "wifi disconnected reason=%u, reconnecting",
+                 event != nullptr ? static_cast<unsigned>(event->reason) : 0);
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(g_wifi_events, kWifiConnectedBit);
@@ -206,6 +209,7 @@ void RecognitionClient::begin() {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     EventBits_t bits = xEventGroupWaitBits(g_wifi_events, kWifiConnectedBit, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
     wifi_ready_ = (bits & kWifiConnectedBit) != 0;
@@ -230,7 +234,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         return result;
     }
 
-    constexpr int kResponseCapacity = 1536;
+    constexpr int kResponseCapacity = 4096;
     char* response = static_cast<char*>(calloc(kResponseCapacity, sizeof(char)));
     if (response == nullptr) {
         ESP_LOGE(TAG, "failed to allocate recognition response buffer");
@@ -244,7 +248,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
     esp_http_client_config_t config = {};
     config.url = kRecognitionServerUrl;
     config.method = HTTP_METHOD_POST;
-    config.timeout_ms = 10000;
+    config.timeout_ms = 30000;
     config.event_handler = http_event_handler;
     config.user_data = &response_buffer;
     esp_http_client_handle_t client = esp_http_client_init(&config);

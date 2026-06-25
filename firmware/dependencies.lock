@@ -51,6 +51,6 @@ direct_dependencies:
 - espressif/esp_audio_codec
 - espressif/esp_codec_dev
 - espressif/esp_lcd_ili9341
-manifest_hash: c1befc63c534814f51e300f164a1382dbf466b6bc8d80e16686523c47cc35dc5
+manifest_hash: 2c0c50bcd0657ec230aaeb21c5a9d7b96b2fdd9acb01399749f24bcaa8f6370e
 target: esp32s3
 version: 2.0.0
