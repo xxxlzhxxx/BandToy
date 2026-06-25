@@ -23,6 +23,10 @@ class RecognitionClient {
 public:
     void begin();
     RecognitionResult recognize(const int16_t* samples, int sample_count, uint32_t sample_rate);
+    RecognitionResult recognize(const int16_t* samples,
+                                int sample_count,
+                                uint32_t sample_rate,
+                                const char* mode);
 
 private:
     bool wifi_ready_ = false;

@@ -3,7 +3,6 @@
 #include "display_signals.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include <math.h>
 #include "freertos/FreeRTOS.h"
@@ -19,25 +18,54 @@ using namespace bandtoy;
 namespace {
 
 constexpr const char* TAG = "bandtoy";
-constexpr uint8_t kJoinAfterBars = 1;
 constexpr uint32_t kMaxListenDurationMs = 10000;
 constexpr uint32_t kNoSoundSessionTimeoutMs = 10000;
 constexpr uint32_t kEndOfPhraseSilenceMs = 1000;
 constexpr int kListenSamples = static_cast<int>((static_cast<uint64_t>(kMaxListenDurationMs) * kBox3AudioSampleRate) / 1000);
 constexpr float kMinimumConfidence = 0.60f;
-constexpr uint32_t kMinimumJoinDelayMs = 250;
-constexpr uint32_t kPlaybackStartupCompensationMs = 80;
 constexpr bool kManualCallResponseTest = false;
 constexpr uint32_t kAutoRestartAfterNoSoundMs = 1000;
 constexpr uint32_t kPostPlaybackCooldownMs = 1800;
 constexpr uint32_t kFallbackResponseDelayMs = 500;
 
 SongRuntime g_runtime;
-DeviceSync g_sync;
 LifeSignals g_life;
 DisplaySignals g_display;
-QueueHandle_t g_start_queue = nullptr;
+#if BANDTOY_ROLE_LEADER
 RecognitionClient g_recognition;
+#else
+DeviceSync g_sync;
+QueueHandle_t g_start_queue = nullptr;
+#endif
+
+enum class InteractionMode : uint8_t {
+    kSongChain = 0,
+    kVoiceEmotion,
+};
+
+volatile InteractionMode g_interaction_mode = InteractionMode::kSongChain;
+
+const char* interaction_mode_name(InteractionMode mode) {
+    switch (mode) {
+        case InteractionMode::kSongChain:
+            return "song_chain";
+        case InteractionMode::kVoiceEmotion:
+            return "voice_emotion";
+        default:
+            return "unknown";
+    }
+}
+
+const char* recognition_mode_query(InteractionMode mode) {
+    switch (mode) {
+        case InteractionMode::kSongChain:
+            return "twinkle";
+        case InteractionMode::kVoiceEmotion:
+            return "personality";
+        default:
+            return "twinkle";
+    }
+}
 
 bool wait_for_play_button_press() {
     while (true) {
@@ -56,6 +84,31 @@ bool wait_for_play_button_press() {
     }
 }
 
+bool consume_play_button_press() {
+    if (gpio_get_level(kPlayButtonPin) != 0) {
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(35));
+    if (gpio_get_level(kPlayButtonPin) != 0) {
+        return false;
+    }
+    while (gpio_get_level(kPlayButtonPin) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    vTaskDelay(pdMS_TO_TICKS(80));
+    return true;
+}
+
+void toggle_interaction_mode() {
+    g_interaction_mode = g_interaction_mode == InteractionMode::kSongChain
+        ? InteractionMode::kVoiceEmotion
+        : InteractionMode::kSongChain;
+    ESP_LOGI(TAG, "interaction mode switched: mode=%s server_mode=%s",
+             interaction_mode_name(g_interaction_mode),
+             recognition_mode_query(g_interaction_mode));
+    g_display.success();
+}
+
 void init_play_button() {
     gpio_config_t io_conf = {};
     io_conf.pin_bit_mask = 1ULL << kPlayButtonPin;
@@ -64,6 +117,16 @@ void init_play_button() {
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
+}
+
+bool should_play_response(const RecognitionResult& result, InteractionMode mode, const Song& song) {
+    if (!result.recognized || result.confidence < kMinimumConfidence) {
+        return false;
+    }
+    if (mode == InteractionMode::kSongChain && result.song_id != song.song_id) {
+        return false;
+    }
+    return result.has_response;
 }
 
 void log_audio_stats(const int16_t* samples, int sample_count) {
@@ -81,25 +144,6 @@ void log_audio_stats(const int16_t* samples, int sample_count) {
     ESP_LOGI(TAG, "recorded audio stats: samples=%d peak=%d rms=%.1f", sample_count, peak, value);
 }
 
-uint32_t now_ms() {
-    return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-}
-
-uint32_t latency_compensated_join_delay(uint32_t record_end_position_ms,
-                                        uint32_t elapsed_since_record_end_ms,
-                                        uint16_t bpm) {
-    const uint32_t bar_ms = bar_duration_ms(bpm);
-    if (bar_ms == 0) {
-        return 0;
-    }
-    const uint32_t estimated_now_ms = record_end_position_ms + elapsed_since_record_end_ms + kPlaybackStartupCompensationMs;
-    uint32_t delay_ms = bar_ms - (estimated_now_ms % bar_ms);
-    if (delay_ms < kMinimumJoinDelayMs) {
-        delay_ms += bar_ms;
-    }
-    return delay_ms;
-}
-
 #if !BANDTOY_ROLE_LEADER
 void on_start_message(const SyncStartMessage& message) {
     if (g_start_queue == nullptr) {
@@ -110,6 +154,15 @@ void on_start_message(const SyncStartMessage& message) {
 #endif
 
 #if BANDTOY_ROLE_LEADER
+void mode_button_task(void*) {
+    while (true) {
+        if (consume_play_button_press()) {
+            toggle_interaction_mode();
+        }
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+}
+
 void manual_call_response_task(void*) {
     const Song& song = twinkle_song();
     const Track& response = twinkle_response_line_2();
@@ -140,7 +193,6 @@ void manual_call_response_task(void*) {
 
 void leader_task(void*) {
     const Song& song = twinkle_song();
-    const Track& harmony = song.harmony;
     int16_t* listen_buffer = static_cast<int16_t*>(
         heap_caps_malloc(kListenSamples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (listen_buffer == nullptr) {
@@ -154,23 +206,26 @@ void leader_task(void*) {
 
     vTaskDelay(pdMS_TO_TICKS(1500));
     ESP_LOGI(TAG, "%s is ready as listener", kCharacter.display_name);
+    ESP_LOGI(TAG, "initial interaction mode: mode=%s server_mode=%s",
+             interaction_mode_name(g_interaction_mode),
+             recognition_mode_query(g_interaction_mode));
     g_runtime.play_ready_chime();
 
     while (true) {
         ESP_LOGI(TAG,
-                 "auto continuous call-and-response started; phrase ends after %lu ms silence, listening rests after %lu ms no sound",
+                 "auto continuous listener started; press BOOT/GPIO0 to switch mode for the next recognition; phrase ends after %lu ms silence, listening rests after %lu ms no sound",
                  static_cast<unsigned long>(kEndOfPhraseSilenceMs),
                  static_cast<unsigned long>(kNoSoundSessionTimeoutMs));
 
         while (true) {
+            const InteractionMode mode = g_interaction_mode;
             g_life.listening();
             g_display.listening();
-            ESP_LOGI(TAG, "listening until %lu ms silence...",
+            ESP_LOGI(TAG, "listening mode=%s until %lu ms silence...",
+                     interaction_mode_name(mode),
                      static_cast<unsigned long>(kEndOfPhraseSilenceMs));
-            const uint32_t record_start_ms = now_ms();
             const int recorded_samples = g_runtime.record_until_silence(
                 listen_buffer, kListenSamples, kEndOfPhraseSilenceMs, kNoSoundSessionTimeoutMs);
-            const uint32_t record_end_ms = now_ms();
             if (recorded_samples <= 0) {
                 ESP_LOGI(TAG, "continuous listening session stopped: no sound for %lu ms",
                          static_cast<unsigned long>(kNoSoundSessionTimeoutMs));
@@ -181,59 +236,34 @@ void leader_task(void*) {
             }
             log_audio_stats(listen_buffer, recorded_samples);
             g_display.recognizing();
-            ESP_LOGI(TAG, "uploading recognition audio samples=%d duration_ms=%lu",
+            ESP_LOGI(TAG, "uploading recognition audio mode=%s server_mode=%s samples=%d duration_ms=%lu",
+                     interaction_mode_name(mode),
+                     recognition_mode_query(mode),
                      recorded_samples,
                      static_cast<unsigned long>((static_cast<uint64_t>(recorded_samples) * 1000) / kBox3AudioSampleRate));
 
-            RecognitionResult result = g_recognition.recognize(listen_buffer, recorded_samples, kBox3AudioSampleRate);
-            const uint32_t recognition_done_ms = now_ms();
-            if (!result.recognized || result.song_id != song.song_id || result.confidence < kMinimumConfidence) {
+            RecognitionResult result = g_recognition.recognize(
+                listen_buffer, recorded_samples, kBox3AudioSampleRate, recognition_mode_query(mode));
+            if (!should_play_response(result, mode, song)) {
                 g_display.failure();
-                ESP_LOGW(TAG, "not playing: recognized=%d song_id=%u confidence=%.2f threshold=%.2f",
-                         result.recognized, result.song_id, result.confidence, static_cast<double>(kMinimumConfidence));
+                ESP_LOGW(TAG, "not playing: mode=%s recognized=%d song_id=%u confidence=%.2f threshold=%.2f has_response=%d",
+                         interaction_mode_name(mode),
+                         result.recognized, result.song_id, result.confidence,
+                         static_cast<double>(kMinimumConfidence), result.has_response);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 continue;
             }
 
             g_display.success();
-            if (result.has_response) {
-                const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
-                ESP_LOGI(TAG, "server selected response_phrase_id=%s delay_ms=%lu notes=%u",
-                         result.response_phrase_id, static_cast<unsigned long>(response_delay_ms),
-                         result.response_phrase.note_count);
-                g_life.joining(response_delay_ms);
-                g_life.playing();
-                g_display.playing();
-                g_runtime.play_phrase(result.response_phrase);
-                vTaskDelay(pdMS_TO_TICKS(kPostPlaybackCooldownMs));
-                g_life.listening();
-                g_display.listening();
-                continue;
-            }
-
-            const uint32_t recognition_roundtrip_ms = recognition_done_ms - record_end_ms;
-            const uint32_t record_end_position_ms = result.position_at_record_end_ms != 0
-                ? result.position_at_record_end_ms
-                : result.position_ms + (record_end_ms - record_start_ms);
-            const uint32_t compensated_join_ms = latency_compensated_join_delay(record_end_position_ms, recognition_roundtrip_ms, song.bpm);
-            ESP_LOGI(TAG,
-                     "recognized Twinkle confidence=%.2f position_ms=%lu record_end_position_ms=%lu server_join_ms=%lu recognition_roundtrip_ms=%lu compensated_join_ms=%lu",
-                     result.confidence,
-                     static_cast<unsigned long>(result.position_ms),
-                     static_cast<unsigned long>(record_end_position_ms),
-                     static_cast<unsigned long>(result.join_after_ms),
-                     static_cast<unsigned long>(recognition_roundtrip_ms),
-                     static_cast<unsigned long>(compensated_join_ms));
-            ESP_LOGI(TAG, "recording_ms=%lu recognition_roundtrip_ms=%lu",
-                     static_cast<unsigned long>(record_end_ms - record_start_ms),
-                     static_cast<unsigned long>(recognition_roundtrip_ms));
-            if (compensated_join_ms > 0) {
-                g_life.joining(compensated_join_ms);
-            }
-
+            const uint32_t response_delay_ms = result.response_delay_ms > 0 ? result.response_delay_ms : kFallbackResponseDelayMs;
+            ESP_LOGI(TAG, "server selected mode=%s response_phrase_id=%s delay_ms=%lu notes=%u",
+                     interaction_mode_name(mode),
+                     result.response_phrase_id, static_cast<unsigned long>(response_delay_ms),
+                     result.response_phrase.note_count);
+            g_life.joining(response_delay_ms);
             g_life.playing();
             g_display.playing();
-            g_runtime.play_track(song, harmony);
+            g_runtime.play_phrase(result.response_phrase);
             vTaskDelay(pdMS_TO_TICKS(kPostPlaybackCooldownMs));
             g_life.listening();
             g_display.listening();
@@ -284,6 +314,7 @@ extern "C" void app_main(void) {
         xTaskCreate(manual_call_response_task, "manual_response", 4096, nullptr, 5, nullptr);
     } else {
         g_recognition.begin();
+        xTaskCreate(mode_button_task, "mode_button", 3072, nullptr, 6, nullptr);
         xTaskCreate(leader_task, "leader_task", 4096, nullptr, 5, nullptr);
     }
 #else

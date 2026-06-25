@@ -69,6 +69,26 @@ curl -X POST http://127.0.0.1:8765/recognize?mode=personality \
   --data-binary @sample.wav
 ```
 
+The ESP32 firmware can switch between the two recognition modes with the
+BOOT/GPIO0 button. A press is accepted while the device is idle, listening, or
+cooling down; the new mode is used by the next recognition upload:
+
+- `song_chain`: posts to `/recognize?mode=twinkle` and plays the next Twinkle
+  phrase returned by the server.
+- `voice_emotion`: posts to `/recognize?mode=personality` and plays the
+  MusicBox Fox motif variation selected from ASR + emotion intent.
+
+The device logs the active mode before each upload:
+
+```text
+listening mode=song_chain until 1000 ms silence...
+posting recognition mode=twinkle url=http://.../recognize?mode=twinkle
+
+interaction mode switched: mode=voice_emotion server_mode=personality
+listening mode=voice_emotion until 1000 ms silence...
+posting recognition mode=personality url=http://.../recognize?mode=personality
+```
+
 Debug without ASR:
 
 ```bash

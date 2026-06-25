@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <algorithm>
+#include <stdio.h>
 
 #include "bandtoy_config.h"
 #include "esp_event.h"
@@ -174,6 +175,15 @@ bool parse_response_phrase(const char* response, RuntimePhrase* phrase) {
 
     return phrase->phrase_id[0] != '\0' && phrase->note_count > 0;
 }
+
+void build_recognition_url(const char* mode, char* out, size_t out_size) {
+    if (out == nullptr || out_size == 0) {
+        return;
+    }
+    const char* selected_mode = (mode != nullptr && mode[0] != '\0') ? mode : "twinkle";
+    const char separator = strchr(kRecognitionServerUrl, '?') == nullptr ? '?' : '&';
+    snprintf(out, out_size, "%s%cmode=%s", kRecognitionServerUrl, separator, selected_mode);
+}
 }  // namespace
 
 void RecognitionClient::begin() {
@@ -217,6 +227,13 @@ void RecognitionClient::begin() {
 }
 
 RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sample_count, uint32_t sample_rate) {
+    return recognize(samples, sample_count, sample_rate, "twinkle");
+}
+
+RecognitionResult RecognitionClient::recognize(const int16_t* samples,
+                                               int sample_count,
+                                               uint32_t sample_rate,
+                                               const char* mode) {
     RecognitionResult result = {
         .recognized = false,
         .song_id = 0,
@@ -245,8 +262,10 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
         .capacity = kResponseCapacity,
         .length = 0,
     };
+    char url[192] = {};
+    build_recognition_url(mode, url, sizeof(url));
     esp_http_client_config_t config = {};
-    config.url = kRecognitionServerUrl;
+    config.url = url;
     config.method = HTTP_METHOD_POST;
     config.timeout_ms = 30000;
     config.event_handler = http_event_handler;
@@ -261,6 +280,7 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples, int sampl
     snprintf(content_type, sizeof(content_type), "audio/x-raw; x-sample-rate=%lu", static_cast<unsigned long>(sample_rate));
     esp_http_client_set_header(client, "Content-Type", content_type);
     esp_http_client_set_post_field(client, reinterpret_cast<const char*>(samples), sample_count * sizeof(int16_t));
+    ESP_LOGI(TAG, "posting recognition mode=%s url=%s", mode != nullptr ? mode : "twinkle", url);
 
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
