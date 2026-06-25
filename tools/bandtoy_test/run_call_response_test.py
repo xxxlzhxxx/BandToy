@@ -133,7 +133,10 @@ def main() -> int:
     parser.add_argument(
         "--phrase",
         default="phrase_1",
-        choices=["phrase_1", "phrase_2", "phrase_3", "phrase_4", "phrase_5", "phrase_6"],
+        choices=[
+            "phrase_1", "phrase_2", "phrase_3", "phrase_4", "phrase_5", "phrase_6",
+            "salut_phrase_1", "salut_phrase_2", "salut_phrase_3", "salut_phrase_4",
+        ],
     )
     parser.add_argument("--expected-response", default="phrase_2")
     parser.add_argument("--volume", type=float, default=0.24)

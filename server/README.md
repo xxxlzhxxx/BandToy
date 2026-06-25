@@ -73,8 +73,9 @@ The ESP32 firmware can switch between the two recognition modes with the
 BOOT/GPIO0 button. A press is accepted while the device is idle, listening, or
 cooling down; the new mode is used by the next recognition upload:
 
-- `song_chain`: posts to `/recognize?mode=twinkle` and plays the next Twinkle
-  phrase returned by the server.
+- `song_chain`: posts to `/recognize?mode=twinkle` and plays the next phrase
+  returned by the server. The current phrase library includes Twinkle and a
+  lowered one-octave PoC excerpt from Elgar's `Salut d'Amour`.
 - `voice_emotion`: posts to `/recognize?mode=personality` and plays the
   MusicBox Fox motif variation selected from ASR + emotion intent.
 
@@ -125,7 +126,7 @@ Response shape stays compatible with the firmware:
 }
 ```
 
-## Legacy Twinkle Recognition
+## Song Chain Recognition
 
 This is not Shazam and not an AI model. It is a lightweight pitch-contour
 matcher:
@@ -134,17 +135,18 @@ matcher:
 audio
   -> frame-level pitch estimation
   -> MIDI-ish note contour
-  -> sliding match against the built-in Twinkle reference
-  -> confidence, position, and join delay
+  -> match against the built-in phrase library
+  -> confidence, heard phrase, and next response phrase
 ```
 
-The recognition endpoint accepts 16-bit PCM or WAV audio and returns a join hint:
+The recognition endpoint accepts 16-bit PCM or WAV audio and returns the next
+phrase to play:
 
 ```bash
 curl -X POST \
   -H 'Content-Type: audio/wav' \
   --data-binary @sample.wav \
-  http://127.0.0.1:8765/recognize
+  http://127.0.0.1:8765/recognize?mode=twinkle
 ```
 
 Response:
@@ -166,6 +168,22 @@ Response:
     "pitched_frames": 32
   }
 }
+```
+
+Deterministic local phrase checks:
+
+```bash
+python3 tools/bandtoy_test/play_twinkle_phrase.py phrase_1 \
+  --no-play --out /tmp/bandtoy_twinkle_phrase_1.wav
+curl -s -X POST -H 'Content-Type: audio/wav' \
+  --data-binary @/tmp/bandtoy_twinkle_phrase_1.wav \
+  'http://127.0.0.1:8765/recognize?mode=twinkle' | python3 -m json.tool
+
+python3 tools/bandtoy_test/play_twinkle_phrase.py salut_phrase_1 \
+  --no-play --out /tmp/bandtoy_salut_phrase_1.wav
+curl -s -X POST -H 'Content-Type: audio/wav' \
+  --data-binary @/tmp/bandtoy_salut_phrase_1.wav \
+  'http://127.0.0.1:8765/recognize?mode=twinkle' | python3 -m json.tool
 ```
 
 Field notes:

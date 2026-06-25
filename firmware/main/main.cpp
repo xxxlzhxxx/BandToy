@@ -119,11 +119,8 @@ void init_play_button() {
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 }
 
-bool should_play_response(const RecognitionResult& result, InteractionMode mode, const Song& song) {
+bool should_play_response(const RecognitionResult& result, InteractionMode, const Song&) {
     if (!result.recognized || result.confidence < kMinimumConfidence) {
-        return false;
-    }
-    if (mode == InteractionMode::kSongChain && result.song_id != song.song_id) {
         return false;
     }
     return result.has_response;

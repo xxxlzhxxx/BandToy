@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Minimal BandToy recognition server.
 
-This is intentionally narrow: it only recognizes Twinkle Twinkle Little Star.
-The algorithm is a lightweight melody contour matcher, not a general Shazam.
+The song-chain path recognizes a tiny built-in phrase library and returns the
+next phrase for call-and-response playback. The algorithm is a lightweight
+melody contour matcher, not a general Shazam.
 """
 
 from __future__ import annotations
@@ -73,40 +74,92 @@ TWINKLE_PHRASE_SEQUENCE = [
     },
 ]
 
-PHRASES = {phrase["phrase_id"]: phrase["notes"] for phrase in TWINKLE_PHRASE_SEQUENCE}
-PHRASE_LABELS = {phrase["phrase_id"]: phrase["label"] for phrase in TWINKLE_PHRASE_SEQUENCE}
-PHRASE_ORDER = [phrase["phrase_id"] for phrase in TWINKLE_PHRASE_SEQUENCE]
-NEXT_PHRASE = {
-    phrase_id: PHRASE_ORDER[(index + 1) % len(PHRASE_ORDER)]
-    for index, phrase_id in enumerate(PHRASE_ORDER)
-}
-PHRASE_START_BEATS = {
-    phrase_id: sum(sum(beats for _, beats in PHRASES[previous]) for previous in PHRASE_ORDER[:index])
-    for index, phrase_id in enumerate(PHRASE_ORDER)
-}
-PHRASE_SIGNATURES = {
-    phrase_id: tuple(midi for midi, _ in notes)
-    for phrase_id, notes in PHRASES.items()
-}
+SALUT_DAMOUR_BPM = 80
+SALUT_DAMOUR_PHRASE_SEQUENCE = [
+    {
+        "phrase_id": "salut_phrase_1",
+        "label": "opening_sigh",
+        "notes": [(68, 1), (59, 0.5), (68, 0.5), (66, 0.5), (64, 0.5), (63, 0.5), (64, 0.5), (69, 1)],
+    },
+    {
+        "phrase_id": "salut_phrase_2",
+        "label": "opening_answer",
+        "notes": [(69, 1), (69, 1), (59, 0.5), (68, 1), (60, 0.5), (68, 0.5), (66, 0.5), (64, 0.5), (63, 0.5), (64, 0.5), (66, 1)],
+    },
+    {
+        "phrase_id": "salut_phrase_3",
+        "label": "lifted_call",
+        "notes": [(66, 1.5), (67, 0.5), (68, 1), (59, 0.5), (68, 0.5), (66, 0.5), (64, 0.5), (63, 0.5), (64, 0.5), (73, 1)],
+    },
+    {
+        "phrase_id": "salut_phrase_4",
+        "label": "cadence_answer",
+        "notes": [(73, 1), (73, 1), (71, 0.5), (69, 0.5), (68, 1), (66, 0.5), (64, 0.5), (61, 1), (63, 1), (64, 2)],
+    },
+]
+
+SONG_DEFINITIONS = [
+    {
+        "song_id": 1,
+        "title": "Twinkle Twinkle Little Star",
+        "bpm": TWINKLE_BPM,
+        "phrases": TWINKLE_PHRASE_SEQUENCE,
+    },
+    {
+        "song_id": 2,
+        "title": "Salut d'Amour",
+        "bpm": SALUT_DAMOUR_BPM,
+        "phrases": SALUT_DAMOUR_PHRASE_SEQUENCE,
+    },
+]
+
+PHRASES = {}
+PHRASE_LABELS = {}
+PHRASE_ORDER = []
+PHRASE_START_BEATS = {}
+PHRASE_SIGNATURES = {}
+PHRASE_SONG_ID = {}
+PHRASE_TITLE = {}
+PHRASE_BPM = {}
+PHRASE_BEAT_MS = {}
+NEXT_PHRASE = {}
+
+for song in SONG_DEFINITIONS:
+    phrases = song["phrases"]
+    order = [phrase["phrase_id"] for phrase in phrases]
+    for index, phrase in enumerate(phrases):
+        phrase_id = phrase["phrase_id"]
+        notes = phrase["notes"]
+        PHRASES[phrase_id] = notes
+        PHRASE_LABELS[phrase_id] = phrase["label"]
+        PHRASE_ORDER.append(phrase_id)
+        PHRASE_START_BEATS[phrase_id] = sum(
+            sum(beats for _, beats in previous["notes"])
+            for previous in phrases[:index]
+        )
+        PHRASE_SIGNATURES[phrase_id] = tuple(midi for midi, _ in notes)
+        PHRASE_SONG_ID[phrase_id] = song["song_id"]
+        PHRASE_TITLE[phrase_id] = song["title"]
+        PHRASE_BPM[phrase_id] = song["bpm"]
+        PHRASE_BEAT_MS[phrase_id] = 60000 / song["bpm"]
+        NEXT_PHRASE[phrase_id] = order[(index + 1) % len(order)]
+
 SESSION_EXPECTED_HEARD: dict[str, str] = {}
 
-MIDI_NOTE_NAMES = {
-    60: "C4",
-    62: "D4",
-    64: "E4",
-    65: "F4",
-    67: "G4",
-    69: "A4",
-}
+MIDI_NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
 
 
-def note_events(notes: list[tuple[int, int]], velocity: int = 88) -> list[dict]:
+def midi_note_name(midi: int) -> str:
+    return f"{MIDI_NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+
+
+def note_events(notes: list[tuple[int, float]], beat_ms: float, velocity: int = 88) -> list[dict]:
     events = []
     cursor_ms = 0
     for midi, beats in notes:
-        duration_ms = int(BEAT_MS * beats)
+        duration_ms = int(beat_ms * beats)
         events.append({
-            "note": MIDI_NOTE_NAMES[midi],
+            "note": midi_note_name(midi),
             "start_ms": cursor_ms,
             "duration_ms": duration_ms,
             "velocity": velocity,
@@ -115,8 +168,8 @@ def note_events(notes: list[tuple[int, int]], velocity: int = 88) -> list[dict]:
     return events
 
 
-def phrase_duration_ms(notes: list[tuple[int, int]]) -> int:
-    return int(sum(beats for _, beats in notes) * BEAT_MS)
+def phrase_duration_ms(notes: list[tuple[int, float]], beat_ms: float) -> int:
+    return int(sum(beats for _, beats in notes) * beat_ms)
 
 
 def apply_session_context(result: dict, client_key: str) -> dict:
@@ -129,6 +182,8 @@ def apply_session_context(result: dict, client_key: str) -> dict:
     best_score = result.get("confidence", 0.0)
 
     if expected_phrase_id in PHRASES and heard_phrase_id in PHRASES:
+        if PHRASE_SONG_ID.get(expected_phrase_id) != PHRASE_SONG_ID.get(heard_phrase_id):
+            return result
         expected_score = phrase_scores.get(expected_phrase_id, {}).get("score", 0.0)
         same_melody = PHRASE_SIGNATURES[expected_phrase_id] == PHRASE_SIGNATURES[heard_phrase_id]
         if same_melody or expected_score >= best_score - 0.08:
@@ -148,16 +203,17 @@ def attach_response(result: dict, client_key: str) -> dict:
         result["recognized"] = False
         return result
     response_notes = PHRASES[response_phrase_id]
+    beat_ms = PHRASE_BEAT_MS[response_phrase_id]
     result["response_phrase_id"] = response_phrase_id
     result["response_phrase_label"] = PHRASE_LABELS.get(response_phrase_id, "")
     result["response_delay_ms"] = 500
     result["response_phrase"] = {
         "phrase_id": response_phrase_id,
         "instrument": "music_box",
-        "duration_ms": phrase_duration_ms(response_notes),
-        "notes": note_events(response_notes),
+        "duration_ms": phrase_duration_ms(response_notes, beat_ms),
+        "notes": note_events(response_notes, beat_ms),
     }
-    SESSION_EXPECTED_HEARD[client_key] = NEXT_PHRASE.get(response_phrase_id, PHRASE_ORDER[0])
+    SESSION_EXPECTED_HEARD[client_key] = NEXT_PHRASE.get(response_phrase_id, response_phrase_id)
     return result
 
 
@@ -168,6 +224,7 @@ def client_response(result: dict) -> dict:
         "confidence": result.get("confidence", 0.0),
     }
     if result.get("recognized"):
+        response["title"] = result.get("title", "")
         response["position_ms"] = result.get("position_ms", 0)
         response["position_at_record_end_ms"] = result.get("position_at_record_end_ms", 0)
         response["join_after_ms"] = result.get("join_after_ms", 0)
@@ -321,7 +378,8 @@ def trim_silence(samples: list[float], rate: int = SAMPLE_RATE) -> tuple[list[fl
     high_rms = sorted_rms[int(len(sorted_rms) * 0.85)] if sorted_rms else 0.0
     # A button tap or I2S startup pop can be much louder than the melody.
     # Cap the gate so one transient cannot trim the whole phrase away.
-    threshold = max(0.006, min(0.035, max(median_rms * 2.8, high_rms * 0.45, peak_rms * 0.08)))
+    threshold_cap = 0.022 if peak_rms < 0.08 else 0.035
+    threshold = max(0.006, min(threshold_cap, max(median_rms * 1.45, high_rms * 0.45, peak_rms * 0.08)))
     active = [index for index, value in enumerate(frame_rms) if value >= threshold]
     if not active:
         return samples, {
@@ -351,7 +409,7 @@ def estimate_pitch(frame: list[float], rate: int = SAMPLE_RATE) -> float | None:
     energy = rms(frame)
     if energy < 0.003:
         return None
-    min_freq, max_freq = 120, 760
+    min_freq, max_freq = 120, 1120
     min_lag = int(rate / max_freq)
     max_lag = int(rate / min_freq)
     best_lag = 0
@@ -369,7 +427,7 @@ def estimate_pitch(frame: list[float], rate: int = SAMPLE_RATE) -> float | None:
         if norm_a <= 0 or norm_b <= 0:
             continue
         corr /= math.sqrt(norm_a * norm_b)
-        if corr > best_corr:
+        if corr > best_corr or (best_lag > 0 and corr >= best_corr * 0.92 and lag < best_lag):
             best_corr = corr
             best_lag = lag
     if best_corr < 0.25 or best_lag <= 0:
@@ -406,15 +464,18 @@ def build_reference() -> list[int]:
 REFERENCE = build_reference()
 
 
-def expand_phrase(notes: list[tuple[int, int]]) -> list[int]:
+def expand_phrase(notes: list[tuple[int, float]], bpm: int) -> list[int]:
     reference = []
-    frames_per_beat = max(1, round(BEAT_MS / 125))
+    frames_per_beat = max(1, round((60000 / bpm) / 125))
     for midi, beats in notes:
-        reference.extend([midi] * (frames_per_beat * beats))
+        reference.extend([midi] * max(1, round(frames_per_beat * beats)))
     return reference
 
 
-PHRASE_REFERENCES = {phrase_id: expand_phrase(notes) for phrase_id, notes in PHRASES.items()}
+PHRASE_REFERENCES = {
+    phrase_id: expand_phrase(notes, PHRASE_BPM[phrase_id])
+    for phrase_id, notes in PHRASES.items()
+}
 
 
 def resample_sequence(values: list[int], length: int) -> list[int]:
@@ -522,6 +583,17 @@ def next_bar_delay(position_ms: int) -> int:
     return delay
 
 
+def phrase_next_bar_delay(phrase_id: str, position_ms: int) -> int:
+    beat_ms = PHRASE_BEAT_MS.get(phrase_id, BEAT_MS)
+    bar_ms = beat_ms * 4
+    if position_ms <= 0:
+        return int(bar_ms)
+    delay = int(bar_ms - (position_ms % int(bar_ms)))
+    if delay < 250:
+        delay += int(bar_ms)
+    return delay
+
+
 def match_position(observed: list[int | None], audio_duration_ms: int) -> dict:
     pitched = [(index, note) for index, note in enumerate(observed) if note is not None]
     if len(pitched) < 4:
@@ -538,7 +610,8 @@ def match_position(observed: list[int | None], audio_duration_ms: int) -> dict:
         }
     first_pitch_frame = pitched[0][0]
     first_pitch_ms = first_pitch_frame * 125
-    observed_notes = normalize_octave_glitches([note for _, note in pitched])
+    raw_observed_notes = [note for _, note in pitched]
+    observed_notes = normalize_octave_glitches(raw_observed_notes)
     observed_compact = compact_notes(observed_notes)
     observed_melodic = drop_octave_duplicates(observed_compact)
     observed_intervals = significant_intervals(observed_melodic)
@@ -550,9 +623,14 @@ def match_position(observed: list[int | None], audio_duration_ms: int) -> dict:
     best_score = -1.0
     best_transpose = 0
     for phrase_id, reference in PHRASE_REFERENCES.items():
-        frame_score, transpose = score_phrase(observed_notes, reference)
-        shape_score = interval_score(observed_compact, PHRASE_COMPACT[phrase_id])
-        score = round(0.58 * frame_score + 0.42 * shape_score, 3)
+        candidate_scores = []
+        for candidate_notes in (raw_observed_notes, observed_notes):
+            candidate_compact = compact_notes(candidate_notes)
+            frame_score, transpose = score_phrase(candidate_notes, reference)
+            shape_score = interval_score(candidate_compact, PHRASE_COMPACT[phrase_id])
+            score = round(0.58 * frame_score + 0.42 * shape_score, 3)
+            candidate_scores.append((score, frame_score, shape_score, transpose))
+        score, frame_score, shape_score, transpose = max(candidate_scores, key=lambda value: value[0])
         phrase_scores[phrase_id] = {
             "score": score,
             "frame_score": frame_score,
@@ -564,36 +642,52 @@ def match_position(observed: list[int | None], audio_duration_ms: int) -> dict:
             best_phrase_id = phrase_id
             best_transpose = transpose
 
-    if upward_fifth_interval:
+    twinkle_phrase_1_score = phrase_scores["phrase_1"]["score"]
+    if upward_fifth_interval and twinkle_phrase_1_score >= max(0.34, best_score - 0.10):
         best_phrase_id = "phrase_1"
         best_score = max(best_score, 0.76)
         best_transpose = phrase_scores["phrase_1"]["transpose"]
         phrase_scores["phrase_1"]["score"] = round(best_score, 3)
-    elif first_large_interval >= 4 and phrase_scores["phrase_1"]["score"] >= 0.34:
+    elif first_large_interval >= 4 and twinkle_phrase_1_score >= max(0.34, best_score - 0.10):
         best_phrase_id = "phrase_1"
         best_score = max(best_score, 0.74)
         best_transpose = phrase_scores["phrase_1"]["transpose"]
         phrase_scores["phrase_1"]["score"] = round(best_score, 3)
 
+    if len(observed_intervals) >= 5:
+        salut_opening_shape = (
+            2 <= observed_intervals[0] <= 4
+            and -4 <= observed_intervals[1] <= -2
+            and -3 <= observed_intervals[2] <= -1
+            and -3 <= observed_intervals[3] <= -1
+            and 4 <= observed_intervals[4] <= 7
+        )
+        if salut_opening_shape and phrase_scores["salut_phrase_1"]["score"] >= 0.50:
+            best_phrase_id = "salut_phrase_1"
+            best_score = max(best_score, 0.72)
+            best_transpose = phrase_scores["salut_phrase_1"]["transpose"]
+            phrase_scores["salut_phrase_1"]["score"] = round(best_score, 3)
+
     sorted_scores = sorted((value["score"], phrase_id) for phrase_id, value in phrase_scores.items())
     second_score = sorted_scores[-2][0] if len(sorted_scores) >= 2 else 0.0
     score_margin = best_score - second_score
 
-    position_ms = int(PHRASE_START_BEATS.get(best_phrase_id, 0) * BEAT_MS)
+    beat_ms = PHRASE_BEAT_MS.get(best_phrase_id, BEAT_MS)
+    position_ms = int(PHRASE_START_BEATS.get(best_phrase_id, 0) * beat_ms)
     position_at_record_end_ms = position_ms + max(0, audio_duration_ms - first_pitch_ms)
-    beat_position = position_at_record_end_ms / BEAT_MS
+    beat_position = position_at_record_end_ms / beat_ms
     bar_index = int(beat_position // 4)
     beat_in_bar = beat_position % 4
 
     return {
-        "song_id": 1,
-        "title": "Twinkle Twinkle Little Star",
+        "song_id": PHRASE_SONG_ID.get(best_phrase_id, 0),
+        "title": PHRASE_TITLE.get(best_phrase_id, ""),
         "confidence": round(float(best_score), 3),
         "position_ms": position_ms,
         "position_at_record_end_ms": int(position_at_record_end_ms),
         "bar_index": bar_index,
         "beat_in_bar": round(float(beat_in_bar), 2),
-        "join_after_ms": next_bar_delay(position_at_record_end_ms),
+        "join_after_ms": phrase_next_bar_delay(best_phrase_id, position_at_record_end_ms),
         "recognized": (
             best_score >= 0.54
             or (best_score >= 0.44 and score_margin >= 0.08)

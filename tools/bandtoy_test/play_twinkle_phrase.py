@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and play deterministic Twinkle test phrases for BandToy."""
+"""Generate and play deterministic BandToy song-chain test phrases."""
 
 from __future__ import annotations
 
@@ -14,25 +14,42 @@ from pathlib import Path
 
 
 SAMPLE_RATE = 24000
-BPM = 96
-BEAT_SECONDS = 60.0 / BPM
-
 NOTE_MIDI = {
     "C4": 60,
+    "C#5": 73,
+    "B3": 59,
+    "C#4": 61,
+    "D#4": 63,
+    "D#5": 75,
     "D4": 62,
     "E4": 64,
+    "E5": 76,
     "F4": 65,
+    "F#4": 66,
+    "F#5": 78,
     "G4": 67,
+    "G5": 79,
+    "G#4": 68,
+    "G#5": 80,
     "A4": 69,
+    "A5": 81,
+    "B4": 71,
+    "B5": 83,
+    "C5": 72,
+    "C#6": 85,
 }
 
 PHRASES = {
-    "phrase_1": [("C4", 1), ("C4", 1), ("G4", 1), ("G4", 1), ("A4", 1), ("A4", 1), ("G4", 2)],
-    "phrase_2": [("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 1), ("D4", 1), ("C4", 2)],
-    "phrase_3": [("G4", 1), ("G4", 1), ("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 2)],
-    "phrase_4": [("G4", 1), ("G4", 1), ("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 2)],
-    "phrase_5": [("C4", 1), ("C4", 1), ("G4", 1), ("G4", 1), ("A4", 1), ("A4", 1), ("G4", 2)],
-    "phrase_6": [("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 1), ("D4", 1), ("C4", 2)],
+    "phrase_1": {"bpm": 96, "notes": [("C4", 1), ("C4", 1), ("G4", 1), ("G4", 1), ("A4", 1), ("A4", 1), ("G4", 2)]},
+    "phrase_2": {"bpm": 96, "notes": [("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 1), ("D4", 1), ("C4", 2)]},
+    "phrase_3": {"bpm": 96, "notes": [("G4", 1), ("G4", 1), ("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 2)]},
+    "phrase_4": {"bpm": 96, "notes": [("G4", 1), ("G4", 1), ("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 2)]},
+    "phrase_5": {"bpm": 96, "notes": [("C4", 1), ("C4", 1), ("G4", 1), ("G4", 1), ("A4", 1), ("A4", 1), ("G4", 2)]},
+    "phrase_6": {"bpm": 96, "notes": [("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 1), ("D4", 1), ("C4", 2)]},
+    "salut_phrase_1": {"bpm": 80, "notes": [("G#4", 1), ("B3", 0.5), ("G#4", 0.5), ("F#4", 0.5), ("E4", 0.5), ("D#4", 0.5), ("E4", 0.5), ("A4", 1)]},
+    "salut_phrase_2": {"bpm": 80, "notes": [("A4", 1), ("A4", 1), ("B3", 0.5), ("G#4", 1), ("C4", 0.5), ("G#4", 0.5), ("F#4", 0.5), ("E4", 0.5), ("D#4", 0.5), ("E4", 0.5), ("F#4", 1)]},
+    "salut_phrase_3": {"bpm": 80, "notes": [("F#4", 1.5), ("G4", 0.5), ("G#4", 1), ("B3", 0.5), ("G#4", 0.5), ("F#4", 0.5), ("E4", 0.5), ("D#4", 0.5), ("E4", 0.5), ("C#5", 1)]},
+    "salut_phrase_4": {"bpm": 80, "notes": [("C#5", 1), ("C#5", 1), ("B4", 0.5), ("A4", 0.5), ("G#4", 1), ("F#4", 0.5), ("E4", 0.5), ("C#4", 1), ("D#4", 1), ("E4", 2)]},
 }
 
 
@@ -40,9 +57,9 @@ def midi_to_hz(midi: int) -> float:
     return 440.0 * (2.0 ** ((midi - 69) / 12.0))
 
 
-def synth_note(note: str, beats: float, volume: float) -> list[int]:
+def synth_note(note: str, beats: float, beat_seconds: float, volume: float) -> list[int]:
     frequency = midi_to_hz(NOTE_MIDI[note])
-    duration = beats * BEAT_SECONDS
+    duration = beats * beat_seconds
     count = int(duration * SAMPLE_RATE)
     samples: list[int] = []
     attack = max(1, int(0.015 * SAMPLE_RATE))
@@ -53,10 +70,10 @@ def synth_note(note: str, beats: float, volume: float) -> list[int]:
             envelope = i / attack
         elif i > count - release:
             envelope = max(0.0, (count - i) / release)
-        # Bright but pitch-stable tone: fundamental plus a tiny harmonic.
+        # Pitch-stable tone. Keep this close to a sine wave so the simple
+        # autocorrelation recognizer does not lock onto a harmonic.
         t = i / SAMPLE_RATE
         value = math.sin(2.0 * math.pi * frequency * t)
-        value += 0.18 * math.sin(2.0 * math.pi * frequency * 2.0 * t)
         samples.append(int(max(-1.0, min(1.0, value * envelope * volume)) * 32767))
     gap = int(0.005 * SAMPLE_RATE)
     samples.extend([0] * gap)
@@ -66,9 +83,11 @@ def synth_note(note: str, beats: float, volume: float) -> list[int]:
 def render_phrase(phrase_id: str, volume: float) -> list[int]:
     if phrase_id not in PHRASES:
         raise ValueError(f"unknown phrase: {phrase_id}")
+    phrase = PHRASES[phrase_id]
+    beat_seconds = 60.0 / phrase["bpm"]
     samples: list[int] = []
-    for note, beats in PHRASES[phrase_id]:
-        samples.extend(synth_note(note, beats, volume))
+    for note, beats in phrase["notes"]:
+        samples.extend(synth_note(note, beats, beat_seconds, volume))
     return samples
 
 
