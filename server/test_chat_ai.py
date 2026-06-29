@@ -26,6 +26,45 @@ DIRECT_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class ChatAiTest(unittest.TestCase):
+    def test_tts_v3_posts_resource_id_and_parses_chunked_audio(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"code":0,"data":"AQI="}\n{"code":20000000}\n'
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch.dict(os.environ, {
+            "VOLC_TTS_APP_ID": "app-id",
+            "VOLC_TTS_ACCESS_TOKEN": "access-token",
+            "VOLC_TTS_RESOURCE_ID": "seed-tts-2.0",
+            "VOLC_TTS_SPEAKER": "zh_female_vv_uranus_bigtts",
+        }, clear=True), patch("urllib.request.urlopen", fake_urlopen):
+            result = VolcTtsClient().synthesize("你好")
+
+        self.assertEqual(captured["url"], "https://openspeech.bytedance.com/api/v3/tts/unidirectional")
+        self.assertEqual(captured["headers"]["X-api-app-id"], "app-id")
+        self.assertEqual(captured["headers"]["X-api-access-key"], "access-token")
+        self.assertEqual(captured["headers"]["X-api-resource-id"], "seed-tts-2.0")
+        self.assertEqual(captured["body"]["req_params"]["text"], "你好")
+        self.assertEqual(captured["body"]["req_params"]["speaker"], "zh_female_vv_uranus_bigtts")
+        self.assertEqual(captured["body"]["req_params"]["audio_params"]["format"], "pcm")
+        self.assertEqual(result.audio, b"\x01\x02")
+        self.assertEqual(result.audio_format, "pcm")
+        self.assertEqual(result.source, "volc_tts_v3")
+
     def test_llm_chat_falls_back_without_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
             result = LlmChatClient().reply("你好")

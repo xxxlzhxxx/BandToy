@@ -23,7 +23,7 @@ from statistics import median
 from typing import Iterable
 from uuid import uuid4
 
-from chat_ai import ChatAi, ChatResponse
+from chat_ai import ChatAi, ChatResponse, pcm16_to_wav
 from emotion_ai import EmotionAi
 from music_personality import CharacterMusicEngine, Emotion, build_personality_response
 from pipeline_service import handle_pipeline_get, handle_pipeline_post
@@ -680,7 +680,14 @@ def absolute_url(handler, path: str) -> str:
 
 
 def chat_response_payload(handler, response: ChatResponse) -> dict:
-    audio_id = cache_tts_audio(response.audio, response.audio_mime_type)
+    audio = response.audio
+    audio_format = response.audio_format
+    mime_type = response.audio_mime_type
+    if response.audio_format == "pcm":
+        audio = pcm16_to_wav(response.audio, response.sample_rate)
+        audio_format = "wav"
+        mime_type = "audio/wav"
+    audio_id = cache_tts_audio(audio, mime_type)
     audio_path = f"/tts/{audio_id}"
     return {
         "recognized": response.recognized,
@@ -690,13 +697,13 @@ def chat_response_payload(handler, response: ChatResponse) -> dict:
         "heard_text": response.heard_text,
         "spoken_text": response.spoken_text,
         "tts_audio_url": absolute_url(handler, audio_path),
-        "tts_audio_format": response.audio_format,
-        "tts_audio_mime_type": response.audio_mime_type,
+        "tts_audio_format": audio_format,
+        "tts_audio_mime_type": mime_type,
         "tts_sample_rate": response.sample_rate,
         "debug": {
             "llm_source": response.llm_source,
             "tts_source": response.tts_source,
-            "audio_bytes": len(response.audio),
+            "audio_bytes": len(audio),
             "error": response.error,
         },
     }

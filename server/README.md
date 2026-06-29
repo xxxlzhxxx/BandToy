@@ -46,13 +46,17 @@ export VOLC_ASR_LANGUAGE="zh-CN"
 
 export VOLC_TTS_APP_ID="..."
 export VOLC_TTS_ACCESS_TOKEN="..."
-export VOLC_TTS_URL="https://openspeech.bytedance.com/api/v1/tts"
-export VOLC_TTS_CLUSTER="volcano_tts"
-export VOLC_TTS_VOICE_TYPE="BV700_V2_streaming"
+export VOLC_TTS_URL="https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+export VOLC_TTS_RESOURCE_ID="seed-tts-2.0"
+export VOLC_TTS_SPEAKER="zh_female_vv_uranus_bigtts"
 export VOLC_TTS_SAMPLE_RATE="24000"
 ```
 
 Do not commit these values. Local `.env` files are ignored.
+
+For the current Volcengine console labels, use `Doubao_Seed_ASR_Streaming_2.0`
+with `VOLC_ASR_RESOURCE_ID=volc.seedasr.sauc.duration`, and
+`TTS-SeedTTS2.0` with `VOLC_TTS_RESOURCE_ID=seed-tts-2.0`.
 
 ASR uses Volcengine's WebSocket binary protocol from the "大模型流式语音识别"
 doc. The local server sends one `full client request` frame, then the recorded

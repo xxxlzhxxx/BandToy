@@ -14,8 +14,11 @@ from emotion_ai import AsrClient, DEFAULT_ARK_BASE_URL
 
 
 DEFAULT_TTS_URL = "https://openspeech.bytedance.com/api/v1/tts"
+DEFAULT_TTS_V3_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 DEFAULT_TTS_CLUSTER = "volcano_tts"
 DEFAULT_TTS_VOICE_TYPE = "BV700_V2_streaming"
+DEFAULT_TTS_RESOURCE_ID = "seed-tts-2.0"
+DEFAULT_TTS_SPEAKER = "zh_female_vv_uranus_bigtts"
 DEFAULT_SAMPLE_RATE = 24000
 
 
@@ -81,6 +84,30 @@ def synthesize_fallback_wav(text: str, sample_rate: int = DEFAULT_SAMPLE_RATE) -
     return _wav_header(sample_count, sample_rate) + bytes(samples)
 
 
+def pcm16_to_wav(audio: bytes, sample_rate: int = DEFAULT_SAMPLE_RATE) -> bytes:
+    return _wav_header(len(audio) // 2, sample_rate) + audio[: len(audio) - (len(audio) % 2)]
+
+
+def _decode_v3_tts_audio(raw: str) -> bytes:
+    chunks: list[bytes] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        data = json.loads(line)
+        code = int(data.get("code", 0))
+        if code not in (0, 20000000):
+            raise ValueError(str(data.get("message") or code))
+        audio_b64 = data.get("data") or data.get("audio")
+        if audio_b64:
+            chunks.append(base64.b64decode(str(audio_b64)))
+    if chunks:
+        return b"".join(chunks)
+    data = json.loads(raw)
+    audio_b64 = data.get("data") or data.get("audio")
+    return base64.b64decode(str(audio_b64)) if audio_b64 else b""
+
+
 class LlmChatClient:
     def __init__(self, disabled: bool = False):
         self.disabled = disabled
@@ -137,9 +164,11 @@ class VolcTtsClient:
         self.disabled = disabled
         self.app_id = os.environ.get("VOLC_TTS_APP_ID", "")
         self.access_token = os.environ.get("VOLC_TTS_ACCESS_TOKEN", "")
-        self.url = os.environ.get("VOLC_TTS_URL", DEFAULT_TTS_URL)
+        self.resource_id = os.environ.get("VOLC_TTS_RESOURCE_ID", DEFAULT_TTS_RESOURCE_ID)
+        self.url = os.environ.get("VOLC_TTS_URL", DEFAULT_TTS_V3_URL)
         self.cluster = os.environ.get("VOLC_TTS_CLUSTER", DEFAULT_TTS_CLUSTER)
         self.voice_type = os.environ.get("VOLC_TTS_VOICE_TYPE", DEFAULT_TTS_VOICE_TYPE)
+        self.speaker = os.environ.get("VOLC_TTS_SPEAKER", DEFAULT_TTS_SPEAKER)
         self.uid = os.environ.get("VOLC_TTS_UID", "bandtoy-server")
         self.sample_rate = int(os.environ.get("VOLC_TTS_SAMPLE_RATE", str(DEFAULT_SAMPLE_RATE)))
 
@@ -153,6 +182,60 @@ class VolcTtsClient:
                 source="fallback",
                 error="VOLC_TTS_APP_ID or VOLC_TTS_ACCESS_TOKEN is not set",
             )
+        if "/api/v3/tts/" in self.url:
+            return self._synthesize_v3(text)
+        return self._synthesize_v1(text)
+
+    def _synthesize_v3(self, text: str) -> TtsResult:
+        payload = {
+            "user": {"uid": self.uid},
+            "req_params": {
+                "text": text,
+                "speaker": self.speaker,
+                "audio_params": {
+                    "format": "pcm",
+                    "sample_rate": self.sample_rate,
+                },
+            },
+        }
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "X-Api-App-Id": self.app_id,
+                "X-Api-Access-Key": self.access_token,
+                "X-Api-Resource-Id": self.resource_id,
+                "X-Api-Request-Id": str(uuid.uuid4()),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read().decode("utf-8")
+            audio = _decode_v3_tts_audio(raw)
+            if not audio:
+                raise ValueError("TTS v3 response did not contain audio data")
+            return TtsResult(
+                audio=audio,
+                mime_type="application/octet-stream",
+                audio_format="pcm",
+                sample_rate=self.sample_rate,
+                source="volc_tts_v3",
+                raw=raw[:512],
+            )
+        except (KeyError, ValueError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            return TtsResult(
+                audio=synthesize_fallback_wav(text, self.sample_rate),
+                mime_type="audio/wav",
+                audio_format="wav",
+                sample_rate=self.sample_rate,
+                source="fallback",
+                error=str(exc),
+            )
+
+    def _synthesize_v1(self, text: str) -> TtsResult:
         payload = {
             "app": {
                 "appid": self.app_id,
