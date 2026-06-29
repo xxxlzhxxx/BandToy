@@ -21,7 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from statistics import median
 from typing import Iterable
+from uuid import uuid4
 
+from chat_ai import ChatAi, ChatResponse
 from emotion_ai import EmotionAi
 from music_personality import CharacterMusicEngine, Emotion, build_personality_response
 from pipeline_service import handle_pipeline_get, handle_pipeline_post
@@ -145,6 +147,7 @@ for song in SONG_DEFINITIONS:
         NEXT_PHRASE[phrase_id] = order[(index + 1) % len(order)]
 
 SESSION_EXPECTED_HEARD: dict[str, str] = {}
+TTS_CACHE: dict[str, tuple[bytes, str]] = {}
 
 MIDI_NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
 
@@ -663,6 +666,50 @@ def personality_response_from_audio(body: bytes, content_type: str) -> dict:
     return response
 
 
+def cache_tts_audio(audio: bytes, mime_type: str) -> str:
+    audio_id = uuid4().hex
+    TTS_CACHE[audio_id] = (audio, mime_type)
+    return audio_id
+
+
+def absolute_url(handler, path: str) -> str:
+    host = handler.headers.get("Host", "")
+    if not host:
+        host = f"{handler.server.server_address[0]}:{handler.server.server_address[1]}"
+    return f"http://{host}{path}"
+
+
+def chat_response_payload(handler, response: ChatResponse) -> dict:
+    audio_id = cache_tts_audio(response.audio, response.audio_mime_type)
+    audio_path = f"/tts/{audio_id}"
+    return {
+        "recognized": response.recognized,
+        "mode": "voice_chat",
+        "song_id": 0,
+        "confidence": 1.0 if response.recognized else 0.0,
+        "heard_text": response.heard_text,
+        "spoken_text": response.spoken_text,
+        "tts_audio_url": absolute_url(handler, audio_path),
+        "tts_audio_format": response.audio_format,
+        "tts_audio_mime_type": response.audio_mime_type,
+        "tts_sample_rate": response.sample_rate,
+        "debug": {
+            "llm_source": response.llm_source,
+            "tts_source": response.tts_source,
+            "audio_bytes": len(response.audio),
+            "error": response.error,
+        },
+    }
+
+
+def chat_response_from_text(handler, text: str) -> dict:
+    return chat_response_payload(handler, ChatAi().reply_text(text))
+
+
+def chat_response_from_audio(handler, body: bytes, content_type: str) -> dict:
+    return chat_response_payload(handler, ChatAi().reply_audio(body, content_type))
+
+
 def read_json_body(handler) -> dict:
     length = int(handler.headers.get("Content-Length", "0"))
     if length <= 0:
@@ -1124,6 +1171,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(phrase)
             return
+        if path.startswith("/tts/"):
+            audio_id = urllib.parse.unquote(path.removeprefix("/tts/"))
+            cached = TTS_CACHE.get(audio_id)
+            if cached is None:
+                self.send_error(404)
+                return
+            audio, mime_type = cached
+            self.send_bytes(audio, 200, mime_type)
+            return
         if path == "/score":
             self.send_json(library_songs_response())
             return
@@ -1149,7 +1205,14 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             content_type = self.headers.get("Content-Type", "")
             body = self.rfile.read(length)
-            if recognize_mode(self.path) == "personality":
+            mode = recognize_mode(self.path)
+            if mode == "chat":
+                debug_text = debug_text_header(self)
+                result = chat_response_from_text(self, debug_text) if debug_text else chat_response_from_audio(self, body, content_type)
+                self.send_json(result)
+                print(json.dumps(result, ensure_ascii=False), flush=True)
+                return
+            if mode == "personality":
                 debug_text = debug_text_header(self)
                 result = personality_response_from_text(debug_text) if debug_text else personality_response_from_audio(body, content_type)
                 self.send_json(result)

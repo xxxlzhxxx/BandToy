@@ -1,10 +1,12 @@
 # BandToy Server
 
-Tiny PoC server for two experiments:
+Tiny PoC server for three experiments:
 
 - Legacy Twinkle phrase recognition.
 - Musical Personality P0.1: MusicBox Fox listens to user text/audio emotion and
   replies only with motif variations.
+- Voice chat P0: listens to user speech, runs ASR + LLM + TTS, and returns a
+  short spoken reply for the ESP32 to play.
 
 Run:
 
@@ -41,6 +43,13 @@ export VOLC_ASR_SECRET_KEY="..."  # Kept for console parity; websocket ASR uses 
 export VOLC_ASR_URL="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"
 export VOLC_ASR_RESOURCE_ID="volc.seedasr.sauc.duration"
 export VOLC_ASR_LANGUAGE="zh-CN"
+
+export VOLC_TTS_APP_ID="..."
+export VOLC_TTS_ACCESS_TOKEN="..."
+export VOLC_TTS_URL="https://openspeech.bytedance.com/api/v1/tts"
+export VOLC_TTS_CLUSTER="volcano_tts"
+export VOLC_TTS_VOICE_TYPE="BV700_V2_streaming"
+export VOLC_TTS_SAMPLE_RATE="24000"
 ```
 
 Do not commit these values. Local `.env` files are ignored.
@@ -69,7 +78,7 @@ curl -X POST http://127.0.0.1:8765/recognize?mode=personality \
   --data-binary @sample.wav
 ```
 
-The ESP32 firmware can switch between the two recognition modes with the
+The ESP32 firmware can switch between the three recognition modes with the
 BOOT/GPIO0 button. A press is accepted while the device is idle, listening, or
 cooling down; the new mode is used by the next recognition upload:
 
@@ -78,6 +87,8 @@ cooling down; the new mode is used by the next recognition upload:
   lowered one-octave PoC excerpt from Elgar's `Salut d'Amour`.
 - `voice_emotion`: posts to `/recognize?mode=personality` and plays the
   MusicBox Fox motif variation selected from ASR + emotion intent.
+- `voice_chat`: posts to `/recognize?mode=chat`, then downloads and plays the
+  WAV returned by the server's ASR + LLM + TTS pipeline.
 
 The device logs the active mode before each upload:
 
@@ -88,6 +99,10 @@ posting recognition mode=twinkle url=http://.../recognize?mode=twinkle
 interaction mode switched: mode=voice_emotion server_mode=personality
 listening mode=voice_emotion until 1000 ms silence...
 posting recognition mode=personality url=http://.../recognize?mode=personality
+
+interaction mode switched: mode=voice_chat server_mode=chat
+listening mode=voice_chat until 1000 ms silence...
+posting recognition mode=chat url=http://.../recognize?mode=chat
 ```
 
 Debug without ASR:
@@ -104,6 +119,30 @@ Personality score:
 
 ```bash
 curl http://127.0.0.1:8765/personality/score
+```
+
+Debug voice chat without ASR:
+
+```bash
+TEXT_B64=$(printf '你好小熊，今天有点累' | base64)
+curl -X POST http://127.0.0.1:8765/recognize?mode=chat \
+  -H "X-BandToy-Text-Base64: $TEXT_B64" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+The chat response includes a short reply and a temporary WAV URL:
+
+```json
+{
+  "recognized": true,
+  "mode": "voice_chat",
+  "heard_text": "你好小熊，今天有点累",
+  "spoken_text": "我听见你说：你好小熊，今天有点累。我在这里陪你。",
+  "tts_audio_url": "http://127.0.0.1:8765/tts/...",
+  "tts_audio_format": "wav",
+  "tts_sample_rate": 24000
+}
 ```
 
 Response shape stays compatible with the firmware:

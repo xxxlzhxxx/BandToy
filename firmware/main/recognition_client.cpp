@@ -245,6 +245,9 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples,
         .response_phrase_id = {},
         .response_delay_ms = 0,
         .response_phrase = {},
+        .has_tts_audio = false,
+        .tts_audio_url = {},
+        .spoken_text = {},
     };
     if (!wifi_ready_) {
         ESP_LOGW(TAG, "recognition skipped: wifi not ready");
@@ -295,6 +298,9 @@ RecognitionResult RecognitionClient::recognize(const int16_t* samples,
             result.position_at_record_end_ms = parse_u32(response, "\"position_at_record_end_ms\"", 0);
             result.join_after_ms = parse_u32(response, "\"join_after_ms\"", 0);
             result.response_delay_ms = parse_u32(response, "\"response_delay_ms\"", 0);
+            result.has_tts_audio = parse_string(response, "\"tts_audio_url\"", result.tts_audio_url,
+                                                sizeof(result.tts_audio_url));
+            parse_string(response, "\"spoken_text\"", result.spoken_text, sizeof(result.spoken_text));
             result.has_response = parse_string(response, "\"response_phrase_id\"", result.response_phrase_id,
                                                sizeof(result.response_phrase_id));
             if (result.has_response) {

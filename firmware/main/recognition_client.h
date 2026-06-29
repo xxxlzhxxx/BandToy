@@ -17,6 +17,9 @@ struct RecognitionResult {
     char response_phrase_id[32];
     uint32_t response_delay_ms;
     RuntimePhrase response_phrase;
+    bool has_tts_audio;
+    char tts_audio_url[192];
+    char spoken_text[160];
 };
 
 class RecognitionClient {

@@ -13,6 +13,7 @@ class Box3AudioOutput {
 public:
     void begin();
     void play_tone(uint16_t frequency_hz, uint32_t duration_ms);
+    void play_pcm16(const int16_t* samples, int sample_count);
     void silence(uint32_t duration_ms);
     void record(int16_t* samples, int sample_count);
     int record_until_silence(int16_t* samples,

@@ -1,13 +1,87 @@
 #include "song_runtime.h"
 
 #include "character_profile.h"
+#include "pins.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
+
+#include <string.h>
 
 namespace bandtoy {
 
 namespace {
 
 constexpr const char* TAG = "song_runtime";
+constexpr int kMaxDownloadedAudioBytes = 768 * 1024;
+
+struct DownloadBuffer {
+    uint8_t* data;
+    int capacity;
+    int length;
+};
+
+esp_err_t audio_http_event_handler(esp_http_client_event_t* event) {
+    if (event->event_id != HTTP_EVENT_ON_DATA || event->user_data == nullptr || event->data == nullptr) {
+        return ESP_OK;
+    }
+    auto* buffer = static_cast<DownloadBuffer*>(event->user_data);
+    if (buffer->length + event->data_len > buffer->capacity) {
+        ESP_LOGW(TAG, "downloaded audio exceeds buffer: length=%d incoming=%d capacity=%d",
+                 buffer->length, event->data_len, buffer->capacity);
+        return ESP_FAIL;
+    }
+    memcpy(buffer->data + buffer->length, event->data, event->data_len);
+    buffer->length += event->data_len;
+    return ESP_OK;
+}
+
+uint16_t read_le16(const uint8_t* data) {
+    return static_cast<uint16_t>(data[0] | (data[1] << 8));
+}
+
+uint32_t read_le32(const uint8_t* data) {
+    return static_cast<uint32_t>(data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24));
+}
+
+bool find_wav_pcm_data(const uint8_t* bytes,
+                       int byte_count,
+                       const int16_t** samples,
+                       int* sample_count,
+                       uint32_t* sample_rate) {
+    if (bytes == nullptr || byte_count < 44 || memcmp(bytes, "RIFF", 4) != 0 || memcmp(bytes + 8, "WAVE", 4) != 0) {
+        return false;
+    }
+    int offset = 12;
+    bool saw_pcm_format = false;
+    while (offset + 8 <= byte_count) {
+        const uint8_t* chunk = bytes + offset;
+        const uint32_t chunk_size = read_le32(chunk + 4);
+        const int payload_offset = offset + 8;
+        if (payload_offset + static_cast<int>(chunk_size) > byte_count) {
+            return false;
+        }
+        if (memcmp(chunk, "fmt ", 4) == 0 && chunk_size >= 16) {
+            const uint16_t format = read_le16(bytes + payload_offset);
+            const uint16_t channels = read_le16(bytes + payload_offset + 2);
+            const uint32_t rate = read_le32(bytes + payload_offset + 4);
+            const uint16_t bits = read_le16(bytes + payload_offset + 14);
+            saw_pcm_format = (format == 1 && channels == 1 && bits == 16);
+            if (sample_rate != nullptr) {
+                *sample_rate = rate;
+            }
+        } else if (memcmp(chunk, "data", 4) == 0) {
+            if (!saw_pcm_format) {
+                return false;
+            }
+            *samples = reinterpret_cast<const int16_t*>(bytes + payload_offset);
+            *sample_count = static_cast<int>(chunk_size / sizeof(int16_t));
+            return *sample_count > 0;
+        }
+        offset = payload_offset + static_cast<int>(chunk_size) + (chunk_size % 2);
+    }
+    return false;
+}
 
 uint16_t note_to_frequency_hz(const char* note) {
     if (note == nullptr || note[0] == '\0') {
@@ -171,6 +245,78 @@ void SongRuntime::play_phrase(const RuntimePhrase& phrase) {
     audio_.silence(20);
     playing_ = false;
     ESP_LOGI(TAG, "%s finished phrase %s", kCharacter.display_name, phrase.phrase_id);
+}
+
+bool SongRuntime::play_audio_url(const char* url) {
+    if (url == nullptr || url[0] == '\0') {
+        ESP_LOGW(TAG, "tts playback skipped: empty audio url");
+        return false;
+    }
+
+    uint8_t* audio_bytes = static_cast<uint8_t*>(
+        heap_caps_malloc(kMaxDownloadedAudioBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (audio_bytes == nullptr) {
+        audio_bytes = static_cast<uint8_t*>(heap_caps_malloc(kMaxDownloadedAudioBytes, MALLOC_CAP_8BIT));
+    }
+    if (audio_bytes == nullptr) {
+        ESP_LOGE(TAG, "failed to allocate tts download buffer");
+        return false;
+    }
+
+    DownloadBuffer buffer = {
+        .data = audio_bytes,
+        .capacity = kMaxDownloadedAudioBytes,
+        .length = 0,
+    };
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 45000;
+    config.event_handler = audio_http_event_handler;
+    config.user_data = &buffer;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        free(audio_bytes);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "downloading tts audio url=%s", url);
+    const esp_err_t err = esp_http_client_perform(client);
+    const int status = err == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+    if (err != ESP_OK || status != 200 || buffer.length <= 0) {
+        ESP_LOGE(TAG, "tts audio download failed err=%s status=%d bytes=%d",
+                 esp_err_to_name(err), status, buffer.length);
+        free(audio_bytes);
+        return false;
+    }
+
+    const int16_t* samples = nullptr;
+    int sample_count = 0;
+    uint32_t sample_rate = 0;
+    if (!find_wav_pcm_data(audio_bytes, buffer.length, &samples, &sample_count, &sample_rate)) {
+        ESP_LOGE(TAG, "tts audio is not 16-bit mono wav bytes=%d", buffer.length);
+        free(audio_bytes);
+        return false;
+    }
+    if (sample_rate != kBox3AudioSampleRate) {
+        ESP_LOGW(TAG, "tts sample rate %lu differs from output %lu; playback speed may change",
+                 static_cast<unsigned long>(sample_rate),
+                 static_cast<unsigned long>(kBox3AudioSampleRate));
+    }
+
+    playing_ = true;
+    ESP_LOGI(TAG, "%s starts tts audio bytes=%d samples=%d rate=%lu",
+             kCharacter.display_name,
+             buffer.length,
+             sample_count,
+             static_cast<unsigned long>(sample_rate));
+    audio_.play_pcm16(samples, sample_count);
+    audio_.silence(30);
+    playing_ = false;
+    free(audio_bytes);
+    ESP_LOGI(TAG, "%s finished tts audio", kCharacter.display_name);
+    return true;
 }
 
 void SongRuntime::record(int16_t* samples, int sample_count) {

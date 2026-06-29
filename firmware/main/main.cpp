@@ -41,6 +41,7 @@ QueueHandle_t g_start_queue = nullptr;
 enum class InteractionMode : uint8_t {
     kSongChain = 0,
     kVoiceEmotion,
+    kVoiceChat,
 };
 
 volatile InteractionMode g_interaction_mode = InteractionMode::kSongChain;
@@ -51,6 +52,8 @@ const char* interaction_mode_name(InteractionMode mode) {
             return "song_chain";
         case InteractionMode::kVoiceEmotion:
             return "voice_emotion";
+        case InteractionMode::kVoiceChat:
+            return "voice_chat";
         default:
             return "unknown";
     }
@@ -62,6 +65,8 @@ const char* recognition_mode_query(InteractionMode mode) {
             return "twinkle";
         case InteractionMode::kVoiceEmotion:
             return "personality";
+        case InteractionMode::kVoiceChat:
+            return "chat";
         default:
             return "twinkle";
     }
@@ -100,9 +105,18 @@ bool consume_play_button_press() {
 }
 
 void toggle_interaction_mode() {
-    g_interaction_mode = g_interaction_mode == InteractionMode::kSongChain
-        ? InteractionMode::kVoiceEmotion
-        : InteractionMode::kSongChain;
+    switch (g_interaction_mode) {
+        case InteractionMode::kSongChain:
+            g_interaction_mode = InteractionMode::kVoiceEmotion;
+            break;
+        case InteractionMode::kVoiceEmotion:
+            g_interaction_mode = InteractionMode::kVoiceChat;
+            break;
+        case InteractionMode::kVoiceChat:
+        default:
+            g_interaction_mode = InteractionMode::kSongChain;
+            break;
+    }
     ESP_LOGI(TAG, "interaction mode switched: mode=%s server_mode=%s",
              interaction_mode_name(g_interaction_mode),
              recognition_mode_query(g_interaction_mode));
@@ -119,9 +133,12 @@ void init_play_button() {
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 }
 
-bool should_play_response(const RecognitionResult& result, InteractionMode, const Song&) {
+bool should_play_response(const RecognitionResult& result, InteractionMode mode, const Song&) {
     if (!result.recognized || result.confidence < kMinimumConfidence) {
         return false;
+    }
+    if (mode == InteractionMode::kVoiceChat) {
+        return result.has_tts_audio;
     }
     return result.has_response;
 }
@@ -260,7 +277,14 @@ void leader_task(void*) {
             g_life.joining(response_delay_ms);
             g_life.playing();
             g_display.playing();
-            g_runtime.play_phrase(result.response_phrase);
+            if (mode == InteractionMode::kVoiceChat) {
+                ESP_LOGI(TAG, "server chat reply: %s", result.spoken_text);
+                if (!g_runtime.play_audio_url(result.tts_audio_url)) {
+                    ESP_LOGW(TAG, "tts playback failed: url=%s", result.tts_audio_url);
+                }
+            } else {
+                g_runtime.play_phrase(result.response_phrase);
+            }
             vTaskDelay(pdMS_TO_TICKS(kPostPlaybackCooldownMs));
             g_life.listening();
             g_display.listening();

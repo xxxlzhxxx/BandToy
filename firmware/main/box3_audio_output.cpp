@@ -265,6 +265,20 @@ void Box3AudioOutput::play_tone(uint16_t frequency_hz, uint32_t duration_ms) {
     }
 }
 
+void Box3AudioOutput::play_pcm16(const int16_t* samples, int sample_count) {
+    if (!ready_ || samples == nullptr || sample_count <= 0) {
+        return;
+    }
+    int remaining = sample_count;
+    const int16_t* cursor = samples;
+    while (remaining > 0) {
+        const int count = remaining > kChunkSamples ? kChunkSamples : remaining;
+        write_samples(cursor, count);
+        cursor += count;
+        remaining -= count;
+    }
+}
+
 void Box3AudioOutput::silence(uint32_t duration_ms) {
     if (!ready_) {
         vTaskDelay(pdMS_TO_TICKS(duration_ms));
