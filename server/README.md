@@ -186,6 +186,25 @@ curl -s -X POST -H 'Content-Type: audio/wav' \
   'http://127.0.0.1:8765/recognize?mode=twinkle' | python3 -m json.tool
 ```
 
+Library management P0:
+
+```bash
+python3 -u server/server.py --host 0.0.0.0 --port 8765
+open http://127.0.0.1:8765/library
+```
+
+The P0 page is read-only. It shows the built-in song-chain library grouped by
+song title, each song's original melody timeline, phrase slices on that melody,
+next-phrase mapping, runtime note events, and response phrase details. The page
+can preview the selected phrase or its response in the browser with WebAudio.
+The backing JSON endpoints are:
+
+```text
+GET /library/songs
+GET /library/songs/{song_id}
+GET /library/phrases/{phrase_id}
+```
+
 Field notes:
 
 - `recognized`: true when confidence passes the current threshold.

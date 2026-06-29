@@ -237,6 +237,377 @@ def client_response(result: dict) -> dict:
     return response
 
 
+def song_definition_for_phrase(phrase_id: str) -> dict | None:
+    song_id = PHRASE_SONG_ID.get(phrase_id)
+    for song in SONG_DEFINITIONS:
+        if song["song_id"] == song_id:
+            return song
+    return None
+
+
+def song_melody_notes(song: dict) -> list[tuple[int, float]]:
+    notes = []
+    for phrase in song["phrases"]:
+        notes.extend(phrase["notes"])
+    return notes
+
+
+def phrase_note_range(phrase_id: str) -> tuple[int, int]:
+    song = song_definition_for_phrase(phrase_id)
+    if song is None:
+        return 0, 0
+    cursor = 0
+    for phrase in song["phrases"]:
+        start = cursor
+        cursor += len(phrase["notes"])
+        if phrase["phrase_id"] == phrase_id:
+            return start, cursor
+    return 0, 0
+
+
+def score_note_events(notes: list[tuple[int, float]]) -> list[dict]:
+    return [
+        {"midi": midi, "note": midi_note_name(midi), "beats": beats}
+        for midi, beats in notes
+    ]
+
+
+def phrase_summary(phrase_id: str) -> dict:
+    notes = PHRASES[phrase_id]
+    beat_ms = PHRASE_BEAT_MS[phrase_id]
+    start_note_index, end_note_index = phrase_note_range(phrase_id)
+    return {
+        "phrase_id": phrase_id,
+        "label": PHRASE_LABELS[phrase_id],
+        "song_id": PHRASE_SONG_ID[phrase_id],
+        "title": PHRASE_TITLE[phrase_id],
+        "bpm": PHRASE_BPM[phrase_id],
+        "next_phrase_id": NEXT_PHRASE[phrase_id],
+        "start_note_index": start_note_index,
+        "end_note_index": end_note_index,
+        "duration_ms": phrase_duration_ms(notes, beat_ms),
+        "note_count": len(notes),
+        "notes": note_events(notes, beat_ms),
+        "score_notes": score_note_events(notes),
+        "melody_slice": score_note_events(notes),
+    }
+
+
+def library_songs_response() -> dict:
+    songs = []
+    for song in SONG_DEFINITIONS:
+        phrases = [phrase_summary(phrase["phrase_id"]) for phrase in song["phrases"]]
+        melody_notes = score_note_events(song_melody_notes(song))
+        songs.append({
+            "song_id": song["song_id"],
+            "title": song["title"],
+            "bpm": song["bpm"],
+            "melody_note_count": len(melody_notes),
+            "melody_notes": melody_notes,
+            "phrase_count": len(phrases),
+            "phrases": phrases,
+        })
+    return {"songs": songs}
+
+
+def library_phrase_response(phrase_id: str) -> dict | None:
+    if phrase_id not in PHRASES:
+        return None
+    response = phrase_summary(phrase_id)
+    next_phrase_id = NEXT_PHRASE[phrase_id]
+    response["response_phrase"] = phrase_summary(next_phrase_id)
+    return response
+
+
+def library_page_html() -> str:
+    return r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BandToy Library</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1b18;
+      --muted: #6f6a61;
+      --line: #d8d1c4;
+      --paper: #fbfaf7;
+      --panel: #ffffff;
+      --accent: #2f6f73;
+      --accent-soft: #e3f0ef;
+      --warn: #8b5e1d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--paper);
+      color: var(--ink);
+    }
+    header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: #f5f1ea;
+    }
+    h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
+    .status { color: var(--muted); font-size: 13px; }
+    main {
+      display: grid;
+      grid-template-columns: 260px minmax(360px, 1fr) minmax(420px, 1.1fr);
+      min-height: calc(100vh - 56px);
+    }
+    aside, section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .pane-title {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .list { padding: 10px; display: grid; gap: 8px; }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 9px 10px;
+      text-align: left;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover, button.active { border-color: var(--accent); background: var(--accent-soft); }
+    .song-title, .phrase-id { font-weight: 650; }
+    .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .phrase-list { padding: 10px; display: grid; gap: 8px; }
+    .melody-timeline {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfaf7;
+    }
+    .note-cell {
+      min-width: 54px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 6px;
+      background: #fff;
+      text-align: center;
+    }
+    .note-cell.in-phrase { border-color: var(--accent); background: var(--accent-soft); }
+    .note-cell .idx { color: var(--muted); font-size: 11px; }
+    .note-cell .note { display: block; font-weight: 700; }
+    .detail { padding: 14px; overflow: auto; }
+    .detail h2 { margin: 0 0 4px; font-size: 19px; letter-spacing: 0; }
+    .detail h3 { margin: 18px 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      background: #fff;
+    }
+    .metric b { display: block; font-size: 16px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .actions button { text-align: center; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    code {
+      display: block;
+      white-space: pre-wrap;
+      background: #f5f1ea;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      color: var(--warn);
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      aside, section { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BandToy Library</h1>
+    <div class="status" id="status">loading /library/songs</div>
+  </header>
+  <main>
+    <aside>
+      <div class="pane-title">Songs</div>
+      <div class="list" id="song-list"></div>
+    </aside>
+    <section>
+      <div class="pane-title">Melody & Phrases</div>
+      <div class="melody-timeline" id="melody-timeline"></div>
+      <div class="phrase-list" id="phrase-list"></div>
+    </section>
+    <section>
+      <div class="pane-title">Phrase Detail</div>
+      <div class="detail" id="detail"></div>
+    </section>
+  </main>
+  <script>
+    const state = { songs: [], selectedSong: null, selectedPhrase: null };
+    const $ = (id) => document.getElementById(id);
+    const noteLine = (phrase) => phrase.score_notes.map((n) => `${n.note}(${n.beats})`).join("  ");
+    let audioContext = null;
+
+    function noteToFrequency(note) {
+      const match = note.match(/^([A-G])(#|b)?(\d)$/);
+      if (!match) return 0;
+      const base = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[match[1]];
+      const accidental = match[2] === '#' ? 1 : (match[2] === 'b' ? -1 : 0);
+      const octave = Number(match[3]);
+      const midi = (octave + 1) * 12 + base + accidental;
+      return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    function playPhrase(phrase) {
+      audioContext = audioContext || new AudioContext();
+      const now = audioContext.currentTime + 0.04;
+      phrase.notes.forEach((note) => {
+        const frequency = noteToFrequency(note.note);
+        if (!frequency) return;
+        const start = now + note.start_ms / 1000;
+        const duration = Math.max(0.06, note.duration_ms / 1000 * 0.88);
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.16, start + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+        oscillator.connect(gain).connect(audioContext.destination);
+        oscillator.start(start);
+        oscillator.stop(start + duration + 0.03);
+      });
+    }
+
+    async function loadLibrary() {
+      const response = await fetch('/library/songs');
+      const body = await response.json();
+      state.songs = body.songs;
+      state.selectedSong = state.songs[0];
+      state.selectedPhrase = state.selectedSong.phrases[0];
+      $('status').textContent = `${state.songs.length} songs loaded`;
+      renderSongs();
+      renderTimeline();
+      renderPhrases();
+      await selectPhrase(state.selectedPhrase.phrase_id);
+    }
+
+    function renderSongs() {
+      $('song-list').innerHTML = '';
+      state.songs.forEach((song) => {
+        const button = document.createElement('button');
+        button.className = song === state.selectedSong ? 'active' : '';
+        button.innerHTML = `<div class="song-title">${song.title}</div><div class="meta">song_id=${song.song_id} · ${song.bpm} BPM · ${song.melody_note_count} notes · ${song.phrase_count} phrases</div>`;
+        button.onclick = async () => {
+          state.selectedSong = song;
+          state.selectedPhrase = song.phrases[0];
+          renderSongs();
+          renderTimeline();
+          renderPhrases();
+          await selectPhrase(state.selectedPhrase.phrase_id);
+        };
+        $('song-list').appendChild(button);
+      });
+    }
+
+    function renderTimeline() {
+      const selected = state.selectedPhrase;
+      $('melody-timeline').innerHTML = '';
+      state.selectedSong.melody_notes.forEach((note, index) => {
+        const item = document.createElement('div');
+        const inPhrase = selected && index >= selected.start_note_index && index < selected.end_note_index;
+        item.className = `note-cell${inPhrase ? ' in-phrase' : ''}`;
+        item.innerHTML = `<span class="idx">${index}</span><span class="note">${note.note}</span><span class="meta">${note.beats}</span>`;
+        $('melody-timeline').appendChild(item);
+      });
+    }
+
+    function renderPhrases() {
+      $('phrase-list').innerHTML = '';
+      state.selectedSong.phrases.forEach((phrase) => {
+        const button = document.createElement('button');
+        button.className = state.selectedPhrase && phrase.phrase_id === state.selectedPhrase.phrase_id ? 'active' : '';
+        button.innerHTML = `<div class="phrase-id">${phrase.phrase_id}</div><div class="meta">${phrase.label} · notes ${phrase.start_note_index}-${phrase.end_note_index - 1} · next: ${phrase.next_phrase_id}</div>`;
+        button.onclick = () => selectPhrase(phrase.phrase_id);
+        $('phrase-list').appendChild(button);
+      });
+    }
+
+    async function selectPhrase(phraseId) {
+      const response = await fetch(`/library/phrases/${encodeURIComponent(phraseId)}`);
+      const phrase = await response.json();
+      state.selectedPhrase = phrase;
+      renderTimeline();
+      renderPhrases();
+      renderDetail(phrase);
+    }
+
+    function renderDetail(phrase) {
+      const notes = phrase.notes.map((note) => `<tr><td>${note.note}</td><td>${note.start_ms}</td><td>${note.duration_ms}</td><td>${note.velocity}</td></tr>`).join('');
+      const response = phrase.response_phrase;
+      $('detail').innerHTML = `
+        <h2>${phrase.phrase_id}</h2>
+        <div class="meta">${phrase.title} · ${phrase.label}</div>
+        <div class="actions">
+          <button onclick='playPhrase(state.selectedPhrase)'>Play phrase</button>
+          <button onclick='playPhrase(state.selectedPhrase.response_phrase)'>Play response</button>
+        </div>
+        <div class="grid">
+          <div class="metric"><span class="meta">song</span><b>${phrase.song_id}</b></div>
+          <div class="metric"><span class="meta">bpm</span><b>${phrase.bpm}</b></div>
+          <div class="metric"><span class="meta">duration</span><b>${phrase.duration_ms}</b></div>
+          <div class="metric"><span class="meta">slice</span><b>${phrase.start_note_index}-${phrase.end_note_index - 1}</b></div>
+        </div>
+        <h3>Melody Slice</h3>
+        <code>${noteLine({ score_notes: phrase.melody_slice })}</code>
+        <h3>Score Notes</h3>
+        <code>${noteLine(phrase)}</code>
+        <h3>Response</h3>
+        <code>${response.phrase_id}: ${noteLine(response)}</code>
+        <h3>Runtime Notes</h3>
+        <table>
+          <thead><tr><th>note</th><th>start_ms</th><th>duration_ms</th><th>velocity</th></tr></thead>
+          <tbody>${notes}</tbody>
+        </table>`;
+    }
+
+    loadLibrary().catch((error) => {
+      $('status').textContent = error.message;
+      $('detail').textContent = error.stack || error.message;
+    });
+  </script>
+</body>
+</html>"""
+
+
 def maybe_accept_phrase_1_for_poc(result: dict) -> dict:
     return result
 
@@ -726,22 +1097,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/personality/score":
             self.send_json(personality_score_response())
             return
+        if path == "/library":
+            self.send_html(library_page_html())
+            return
+        if path == "/library/songs":
+            self.send_json(library_songs_response())
+            return
+        if path.startswith("/library/songs/"):
+            song_id_text = urllib.parse.unquote(path.removeprefix("/library/songs/"))
+            try:
+                song_id = int(song_id_text)
+            except ValueError:
+                self.send_error(404)
+                return
+            songs = [song for song in library_songs_response()["songs"] if song["song_id"] == song_id]
+            if not songs:
+                self.send_error(404)
+                return
+            self.send_json(songs[0])
+            return
+        if path.startswith("/library/phrases/"):
+            phrase_id = urllib.parse.unquote(path.removeprefix("/library/phrases/"))
+            phrase = library_phrase_response(phrase_id)
+            if phrase is None:
+                self.send_error(404)
+                return
+            self.send_json(phrase)
+            return
         if path == "/score":
-            self.send_json({
-                "song_id": 1,
-                "title": "Twinkle Twinkle Little Star",
-                "bpm": TWINKLE_BPM,
-                "phrases": [
-                    {
-                        "phrase_id": phrase_id,
-                        "label": PHRASE_LABELS[phrase_id],
-                        "next_phrase_id": NEXT_PHRASE[phrase_id],
-                        "start_ms": int(PHRASE_START_BEATS[phrase_id] * BEAT_MS),
-                        "duration_ms": phrase_duration_ms(PHRASES[phrase_id]),
-                    }
-                    for phrase_id in PHRASE_ORDER
-                ],
-            })
+            self.send_json(library_songs_response())
             return
         self.send_error(404)
 
@@ -815,6 +1199,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json_bytes(self, payload: bytes, status: int = 200) -> None:
         self.send_bytes(payload, status, "application/json")
+
+    def send_html(self, value: str, status: int = 200) -> None:
+        self.send_bytes(value.encode("utf-8"), status, "text/html; charset=utf-8")
 
     def send_bytes(self, payload: bytes, status: int = 200, content_type: str = "application/octet-stream") -> None:
         self.send_response(status)
