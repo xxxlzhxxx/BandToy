@@ -49,6 +49,7 @@ public:
     void play_track(const Song& song, const Track& track);
     void play_phrase(const RuntimePhrase& phrase);
     bool play_audio_url(const char* url);
+    bool play_pcm_stream_url(const char* url);
     void record(int16_t* samples, int sample_count);
     int record_until_silence(int16_t* samples,
                              int max_sample_count,

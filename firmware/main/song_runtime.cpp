@@ -21,6 +21,13 @@ struct DownloadBuffer {
     int length;
 };
 
+struct PcmStreamContext {
+    Box3AudioOutput* audio;
+    uint8_t pending[2];
+    int pending_count;
+    int bytes_played;
+};
+
 esp_err_t audio_http_event_handler(esp_http_client_event_t* event) {
     if (event->event_id != HTTP_EVENT_ON_DATA || event->user_data == nullptr || event->data == nullptr) {
         return ESP_OK;
@@ -33,6 +40,33 @@ esp_err_t audio_http_event_handler(esp_http_client_event_t* event) {
     }
     memcpy(buffer->data + buffer->length, event->data, event->data_len);
     buffer->length += event->data_len;
+    return ESP_OK;
+}
+
+esp_err_t pcm_stream_http_event_handler(esp_http_client_event_t* event) {
+    if (event->event_id != HTTP_EVENT_ON_DATA || event->user_data == nullptr || event->data == nullptr) {
+        return ESP_OK;
+    }
+    auto* context = static_cast<PcmStreamContext*>(event->user_data);
+    const uint8_t* data = static_cast<const uint8_t*>(event->data);
+    int length = event->data_len;
+    if (context->pending_count == 1 && length > 0) {
+        uint8_t pair[2] = {context->pending[0], data[0]};
+        context->audio->play_pcm16(reinterpret_cast<const int16_t*>(pair), 1);
+        context->bytes_played += 2;
+        data += 1;
+        length -= 1;
+        context->pending_count = 0;
+    }
+    const int even_length = length - (length % 2);
+    if (even_length > 0) {
+        context->audio->play_pcm16(reinterpret_cast<const int16_t*>(data), even_length / 2);
+        context->bytes_played += even_length;
+    }
+    if (length % 2 == 1) {
+        context->pending[0] = data[length - 1];
+        context->pending_count = 1;
+    }
     return ESP_OK;
 }
 
@@ -316,6 +350,50 @@ bool SongRuntime::play_audio_url(const char* url) {
     playing_ = false;
     free(audio_bytes);
     ESP_LOGI(TAG, "%s finished tts audio", kCharacter.display_name);
+    return true;
+}
+
+bool SongRuntime::play_pcm_stream_url(const char* url) {
+    if (url == nullptr || url[0] == '\0') {
+        ESP_LOGW(TAG, "pcm stream skipped: empty audio url");
+        return false;
+    }
+
+    PcmStreamContext context = {
+        .audio = &audio_,
+        .pending = {},
+        .pending_count = 0,
+        .bytes_played = 0,
+    };
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 45000;
+    config.event_handler = pcm_stream_http_event_handler;
+    config.user_data = &context;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+
+    playing_ = true;
+    ESP_LOGI(TAG, "%s starts pcm stream url=%s", kCharacter.display_name, url);
+    const esp_err_t err = esp_http_client_perform(client);
+    const int status = err == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+    if (context.pending_count == 1) {
+        const uint8_t pair[2] = {context.pending[0], 0};
+        audio_.play_pcm16(reinterpret_cast<const int16_t*>(pair), 1);
+        context.bytes_played += 2;
+    }
+    audio_.silence(30);
+    playing_ = false;
+    if (err != ESP_OK || status != 200 || context.bytes_played <= 0) {
+        ESP_LOGE(TAG, "pcm stream failed err=%s status=%d bytes=%d",
+                 esp_err_to_name(err), status, context.bytes_played);
+        return false;
+    }
+    ESP_LOGI(TAG, "%s finished pcm stream bytes=%d", kCharacter.display_name, context.bytes_played);
     return true;
 }
 

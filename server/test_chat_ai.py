@@ -26,6 +26,12 @@ DIRECT_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class ChatAiTest(unittest.TestCase):
+    def test_chat_llm_defaults_to_mini_endpoint(self):
+        with patch.dict(os.environ, {"ARK_API_KEY": "key"}, clear=True):
+            client = LlmChatClient(disabled=True)
+
+        self.assertEqual(client.model, "ep-20260224155825-66kc4")
+
     def test_tts_v3_posts_resource_id_and_parses_chunked_audio(self):
         captured = {}
 
@@ -64,6 +70,30 @@ class ChatAiTest(unittest.TestCase):
         self.assertEqual(result.audio, b"\x01\x02")
         self.assertEqual(result.audio_format, "pcm")
         self.assertEqual(result.source, "volc_tts_v3")
+
+    def test_tts_v3_streams_pcm_chunks(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    b'{"code":0,"data":"AQI="}\n',
+                    b'{"code":0,"data":"AwQ="}\n',
+                    b'{"code":20000000}\n',
+                ])
+
+        with patch.dict(os.environ, {
+            "VOLC_TTS_APP_ID": "app-id",
+            "VOLC_TTS_ACCESS_TOKEN": "access-token",
+            "VOLC_TTS_RESOURCE_ID": "seed-tts-2.0",
+        }, clear=True), patch("urllib.request.urlopen", lambda request, timeout: FakeResponse()):
+            chunks = list(VolcTtsClient().stream_pcm("你好"))
+
+        self.assertEqual(chunks, [b"\x01\x02", b"\x03\x04"])
 
     def test_llm_chat_falls_back_without_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -147,13 +177,14 @@ class ChatServerTest(unittest.TestCase):
         self.assertEqual(body["mode"], "voice_chat")
         self.assertIn("spoken_text", body)
         self.assertTrue(body["tts_audio_url"].startswith("http://"))
-        self.assertEqual(body["tts_audio_format"], "wav")
+        self.assertEqual(body["tts_audio_format"], "pcm")
+        self.assertIn("/tts_stream/", body["tts_audio_url"])
 
         audio_path = "/" + body["tts_audio_url"].split("/", 3)[3]
         audio_status, content_type, audio = self.get_bytes(audio_path)
         self.assertEqual(audio_status, 200)
-        self.assertEqual(content_type, "audio/wav")
-        self.assertEqual(audio[:4], b"RIFF")
+        self.assertEqual(content_type, "audio/x-raw; format=s16le; rate=24000; channels=1")
+        self.assertGreater(len(audio), 0)
 
 
 if __name__ == "__main__":

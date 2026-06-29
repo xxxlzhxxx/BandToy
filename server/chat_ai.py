@@ -20,6 +20,7 @@ DEFAULT_TTS_VOICE_TYPE = "BV700_V2_streaming"
 DEFAULT_TTS_RESOURCE_ID = "seed-tts-2.0"
 DEFAULT_TTS_SPEAKER = "zh_female_vv_uranus_bigtts"
 DEFAULT_SAMPLE_RATE = 24000
+DEFAULT_CHAT_MODEL = "ep-20260224155825-66kc4"
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,7 @@ class LlmChatClient:
         self.disabled = disabled
         self.api_key = os.environ.get("ARK_API_KEY", "")
         self.base_url = os.environ.get("ARK_BASE_URL", DEFAULT_ARK_BASE_URL).rstrip("/")
-        self.model = os.environ.get("BANDTOY_CHAT_MODEL") or os.environ.get("BANDTOY_LLM_MODEL") or os.environ.get("ARK_LLM_MODEL", "")
+        self.model = os.environ.get("BANDTOY_CHAT_MODEL") or os.environ.get("ARK_LLM_MODEL") or DEFAULT_CHAT_MODEL
 
     def reply(self, text: str) -> ChatTextResult:
         clean_text = (text or "").strip()
@@ -187,30 +188,8 @@ class VolcTtsClient:
         return self._synthesize_v1(text)
 
     def _synthesize_v3(self, text: str) -> TtsResult:
-        payload = {
-            "user": {"uid": self.uid},
-            "req_params": {
-                "text": text,
-                "speaker": self.speaker,
-                "audio_params": {
-                    "format": "pcm",
-                    "sample_rate": self.sample_rate,
-                },
-            },
-        }
-        request = urllib.request.Request(
-            self.url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "X-Api-App-Id": self.app_id,
-                "X-Api-Access-Key": self.access_token,
-                "X-Api-Resource-Id": self.resource_id,
-                "X-Api-Request-Id": str(uuid.uuid4()),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
+        payload = self._v3_payload(text)
+        request = self._v3_request(payload)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read().decode("utf-8")
@@ -234,6 +213,64 @@ class VolcTtsClient:
                 source="fallback",
                 error=str(exc),
             )
+
+    def stream_pcm(self, text: str):
+        if self.disabled or not self.app_id or not self.access_token:
+            fallback = synthesize_fallback_wav(text, self.sample_rate)
+            yield fallback[44:]
+            return
+        if "/api/v3/tts/" not in self.url:
+            result = self.synthesize(text)
+            if result.audio_format == "wav":
+                yield result.audio[44:]
+            else:
+                yield result.audio
+            return
+        request = self._v3_request(self._v3_payload(text))
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    code = int(data.get("code", 0))
+                    if code not in (0, 20000000):
+                        raise ValueError(str(data.get("message") or code))
+                    audio_b64 = data.get("data") or data.get("audio")
+                    if audio_b64:
+                        yield base64.b64decode(str(audio_b64))
+        except (KeyError, ValueError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            fallback = synthesize_fallback_wav(text, self.sample_rate)
+            yield fallback[44:]
+
+    def _v3_payload(self, text: str) -> dict:
+        return {
+            "user": {"uid": self.uid},
+            "req_params": {
+                "text": text,
+                "speaker": self.speaker,
+                "audio_params": {
+                    "format": "pcm",
+                    "sample_rate": self.sample_rate,
+                },
+            },
+        }
+
+    def _v3_request(self, payload: dict) -> urllib.request.Request:
+        return urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "X-Api-App-Id": self.app_id,
+                "X-Api-Access-Key": self.access_token,
+                "X-Api-Resource-Id": self.resource_id,
+                "X-Api-Request-Id": str(uuid.uuid4()),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
 
     def _synthesize_v1(self, text: str) -> TtsResult:
         payload = {

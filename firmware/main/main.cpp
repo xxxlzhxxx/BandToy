@@ -12,6 +12,7 @@
 #include "pins.h"
 #include "recognition_client.h"
 #include "song_runtime.h"
+#include <string.h>
 
 using namespace bandtoy;
 
@@ -279,7 +280,10 @@ void leader_task(void*) {
             g_display.playing();
             if (mode == InteractionMode::kVoiceChat) {
                 ESP_LOGI(TAG, "server chat reply: %s", result.spoken_text);
-                if (!g_runtime.play_audio_url(result.tts_audio_url)) {
+                const bool played = strcmp(result.tts_audio_format, "pcm") == 0
+                    ? g_runtime.play_pcm_stream_url(result.tts_audio_url)
+                    : g_runtime.play_audio_url(result.tts_audio_url);
+                if (!played) {
                     ESP_LOGW(TAG, "tts playback failed: url=%s", result.tts_audio_url);
                 }
             } else {

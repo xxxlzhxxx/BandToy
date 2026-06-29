@@ -148,6 +148,7 @@ for song in SONG_DEFINITIONS:
 
 SESSION_EXPECTED_HEARD: dict[str, str] = {}
 TTS_CACHE: dict[str, tuple[bytes, str]] = {}
+TTS_TEXT_CACHE: dict[str, str] = {}
 
 MIDI_NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
 
@@ -672,6 +673,12 @@ def cache_tts_audio(audio: bytes, mime_type: str) -> str:
     return audio_id
 
 
+def cache_tts_text(text: str) -> str:
+    audio_id = uuid4().hex
+    TTS_TEXT_CACHE[audio_id] = text
+    return audio_id
+
+
 def absolute_url(handler, path: str) -> str:
     host = handler.headers.get("Host", "")
     if not host:
@@ -680,15 +687,8 @@ def absolute_url(handler, path: str) -> str:
 
 
 def chat_response_payload(handler, response: ChatResponse) -> dict:
-    audio = response.audio
-    audio_format = response.audio_format
-    mime_type = response.audio_mime_type
-    if response.audio_format == "pcm":
-        audio = pcm16_to_wav(response.audio, response.sample_rate)
-        audio_format = "wav"
-        mime_type = "audio/wav"
-    audio_id = cache_tts_audio(audio, mime_type)
-    audio_path = f"/tts/{audio_id}"
+    audio_id = cache_tts_text(response.spoken_text)
+    audio_path = f"/tts_stream/{audio_id}"
     return {
         "recognized": response.recognized,
         "mode": "voice_chat",
@@ -697,13 +697,13 @@ def chat_response_payload(handler, response: ChatResponse) -> dict:
         "heard_text": response.heard_text,
         "spoken_text": response.spoken_text,
         "tts_audio_url": absolute_url(handler, audio_path),
-        "tts_audio_format": audio_format,
-        "tts_audio_mime_type": mime_type,
+        "tts_audio_format": "pcm",
+        "tts_audio_mime_type": "audio/x-raw; format=s16le; rate=24000; channels=1",
         "tts_sample_rate": response.sample_rate,
         "debug": {
             "llm_source": response.llm_source,
-            "tts_source": response.tts_source,
-            "audio_bytes": len(audio),
+            "tts_source": "deferred_stream",
+            "audio_bytes": 0,
             "error": response.error,
         },
     }
@@ -1186,6 +1186,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             audio, mime_type = cached
             self.send_bytes(audio, 200, mime_type)
+            return
+        if path.startswith("/tts_stream/"):
+            audio_id = urllib.parse.unquote(path.removeprefix("/tts_stream/"))
+            text = TTS_TEXT_CACHE.get(audio_id)
+            if text is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/x-raw; format=s16le; rate=24000; channels=1")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for chunk in ChatAi().tts_client.stream_pcm(text):
+                    if chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
         if path == "/score":
             self.send_json(library_songs_response())

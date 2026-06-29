@@ -19,6 +19,7 @@ struct RecognitionResult {
     RuntimePhrase response_phrase;
     bool has_tts_audio;
     char tts_audio_url[192];
+    char tts_audio_format[12];
     char spoken_text[160];
 };
 
